@@ -1,8 +1,12 @@
 use std::io::Cursor;
 
 use binrw::{BinReaderExt, BinWriterExt};
-use libaxml::defs::{
-    ResStringPool_ref, ResTable_ref, ResTypeBoolType, ResTypeNullType, ResValueType, Res_value,
+use libaxml::{
+    defs::ResTable_ref,
+    res_value::{
+        ResTypeBoolType, ResTypeNullType, ResValueType, Res_value, ARGB4, ARGB8, RGB4, RGB8,
+    },
+    string_pool::ResStringPool_ref,
 };
 
 #[test]
@@ -320,4 +324,145 @@ fn res_value_write_int_boolean_true() {
     assert_eq!(writer.into_inner(), b"\x08\x00\x00\x12\x01\x00\x00\x00");
 }
 
-// TODO: colors + complex stuff
+#[test]
+fn res_value_argb8() {
+    assert_eq!(
+        ARGB8::new(0xff, 0x41, 0x81, 0xa6),
+        ARGB8 {
+            aarrggbb: 0xff4181a6
+        }
+    );
+    let value = ARGB8 {
+        aarrggbb: 0x12345678,
+    };
+    assert_eq!(value.alpha(), 0x12);
+    assert_eq!(value.red(), 0x34);
+    assert_eq!(value.green(), 0x56);
+    assert_eq!(value.blue(), 0x78);
+}
+
+#[test]
+fn res_value_read_int_color_argb8() {
+    let mut reader = Cursor::new(b"\x08\x00\x00\x1c\x25\x26\x27\x28");
+    let value: Res_value = reader.read_le().unwrap();
+
+    assert_eq!(value.size, 8);
+    assert_eq!(value.res0, 0);
+    assert_eq!(
+        value.data,
+        ResValueType::TYPE_INT_COLOR_ARGB8(ARGB8::new(0x28, 0x27, 0x26, 0x25))
+    );
+}
+#[test]
+fn res_value_write_int_color_argb8() {
+    let mut writer = Cursor::new(Vec::new());
+    writer
+        .write_le(&Res_value::new(ResValueType::TYPE_INT_COLOR_ARGB8(
+            ARGB8::new(0xff, 0x50, 0x12, 0x55),
+        )))
+        .unwrap();
+
+    assert_eq!(writer.into_inner(), b"\x08\x00\x00\x1c\x55\x12\x50\xff");
+}
+
+#[test]
+fn res_value_rgb8() {
+    assert_eq!(RGB8::new(0x41, 0x81, 0xa6), RGB8 { rrggbb: 0x4181a6 });
+    let value = RGB8 { rrggbb: 0x123456 };
+    assert_eq!(value.red(), 0x12);
+    assert_eq!(value.green(), 0x34);
+    assert_eq!(value.blue(), 0x56);
+}
+
+#[test]
+fn res_value_read_int_color_rgb8() {
+    let mut reader = Cursor::new(b"\x08\x00\x00\x1d\x25\x26\x27\x00");
+    let value: Res_value = reader.read_le().unwrap();
+
+    assert_eq!(value.size, 8);
+    assert_eq!(value.res0, 0);
+    assert_eq!(
+        value.data,
+        ResValueType::TYPE_INT_COLOR_RGB8(RGB8::new(0x27, 0x26, 0x25))
+    );
+}
+#[test]
+fn res_value_write_int_color_rgb8() {
+    let mut writer = Cursor::new(Vec::new());
+    writer
+        .write_le(&Res_value::new(ResValueType::TYPE_INT_COLOR_RGB8(
+            RGB8::new(0x50, 0x12, 0x55),
+        )))
+        .unwrap();
+
+    assert_eq!(writer.into_inner(), b"\x08\x00\x00\x1d\x55\x12\x50\x00");
+}
+
+#[test]
+fn res_value_rgb4() {
+    assert_eq!(RGB4::new(0x4, 0x8, 0xa), RGB4 { rgb: 0x48a });
+    let value = RGB4 { rgb: 0x246 };
+    assert_eq!(value.red(), 0x2);
+    assert_eq!(value.green(), 0x4);
+    assert_eq!(value.blue(), 0x6);
+}
+
+#[test]
+fn res_value_read_int_color_rgb4() {
+    let mut reader = Cursor::new(b"\x08\x00\x00\x1f\x65\x02\x00\x00");
+    let value: Res_value = reader.read_le().unwrap();
+
+    assert_eq!(value.size, 8);
+    assert_eq!(value.res0, 0);
+    assert_eq!(
+        value.data,
+        ResValueType::TYPE_INT_COLOR_RGB4(RGB4::new(0x2, 0x6, 0x5))
+    );
+}
+#[test]
+fn res_value_write_int_color_rgb4() {
+    let mut writer = Cursor::new(Vec::new());
+    writer
+        .write_le(&Res_value::new(ResValueType::TYPE_INT_COLOR_RGB4(
+            RGB4::new(0xf, 0xa, 0x0),
+        )))
+        .unwrap();
+
+    assert_eq!(writer.into_inner(), b"\x08\x00\x00\x1f\xa0\x0f\x00\x00");
+}
+
+#[test]
+fn res_value_argb4() {
+    assert_eq!(ARGB4::new(0xb, 0x4, 0x8, 0xa), ARGB4 { argb: 0xb48a });
+    let value = ARGB4 { argb: 0xd246 };
+    assert_eq!(value.alpha(), 0xd);
+    assert_eq!(value.red(), 0x2);
+    assert_eq!(value.green(), 0x4);
+    assert_eq!(value.blue(), 0x6);
+}
+
+#[test]
+fn res_value_read_int_color_argb4() {
+    let mut reader = Cursor::new(b"\x08\x00\x00\x1e\x65\x92\x00\x00");
+    let value: Res_value = reader.read_le().unwrap();
+
+    assert_eq!(value.size, 8);
+    assert_eq!(value.res0, 0);
+    assert_eq!(
+        value.data,
+        ResValueType::TYPE_INT_COLOR_ARGB4(ARGB4::new(0x9, 0x2, 0x6, 0x5))
+    );
+}
+#[test]
+fn res_value_write_int_color_argb4() {
+    let mut writer = Cursor::new(Vec::new());
+    writer
+        .write_le(&Res_value::new(ResValueType::TYPE_INT_COLOR_ARGB4(
+            ARGB4::new(0xd, 0xf, 0xa, 0x0),
+        )))
+        .unwrap();
+
+    assert_eq!(writer.into_inner(), b"\x08\x00\x00\x1e\xa0\xdf\x00\x00");
+}
+
+// TODO: complex stuff

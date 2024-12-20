@@ -5,7 +5,7 @@ use binrw::{BinRead, BinWrite};
 // So that identifier names can be the same
 
 /// Header that appears at the front of every data chunk in a resource.
-#[derive(Debug, BinRead, BinWrite)]
+#[derive(Debug, BinRead, BinWrite, PartialEq)]
 pub struct ResChunk_header {
     /// Type identifier for this chunk. The meaning of this value depends on the containing chunk.
     pub r#type: ResType,
@@ -64,61 +64,6 @@ pub enum ResType {
     RES_TABLE_STAGED_ALIAS_TYPE,
 }
 
-#[derive(Debug, BinRead, BinWrite)]
-pub struct Res_value {
-    /// Number of bytes in this structure.
-    pub size: u16,
-
-    /// Always set to 0.
-    pub res0: u8,
-
-    /// The data for this item, as interpreted according to dataType.
-    pub data: ResValueType,
-}
-
-impl Res_value {
-    pub fn new(data: ResValueType) -> Self {
-        Self {
-            size: 8,
-            res0: 0,
-            data,
-        }
-    }
-}
-
-#[derive(Debug, BinRead, BinWrite, PartialEq)]
-pub enum ResTypeNullType {
-    #[brw(magic(0u32))]
-    DATA_NULL_UNDEFINED,
-    #[brw(magic(1u32))]
-    DATA_NULL_EMPTY,
-}
-#[derive(Debug, BinRead, BinWrite, PartialEq)]
-pub enum ResTypeBoolType {
-    #[brw(magic(0u32))]
-    FALSE,
-    #[brw(magic(1u32))]
-    TRUE,
-}
-
-impl From<bool> for ResTypeBoolType {
-    fn from(value: bool) -> Self {
-        match value {
-            true => ResTypeBoolType::TRUE,
-            false => ResTypeBoolType::FALSE,
-        }
-    }
-}
-
-impl From<ResTypeBoolType> for bool {
-    fn from(value: ResTypeBoolType) -> Self {
-        match value {
-            ResTypeBoolType::TRUE => true,
-            ResTypeBoolType::FALSE => false,
-        }
-    }
-}
-
 /// This is a reference to a unique entry (a ResTable_entry structure) in a resource table. The
 /// value is structured as 0xpptteee, where pp is the package index, tt is the type index in that
 /// package, and eeee is the entry index in that type. The package and type values start a 1 for
@@ -146,66 +91,6 @@ impl From<u32> for ResTable_ref {
             entry_index: value as u16,          // as u16 does & 0xffff
         }
     }
-}
-
-#[derive(Debug, BinRead, BinWrite, PartialEq)]
-pub struct ResStringPool_ref {
-    pub index: u32,
-}
-
-#[derive(Debug, BinRead, BinWrite, PartialEq)]
-pub enum ResValueType {
-    /// The 'data' is either 0 or 1, specifying this resource is either undefined or empty,
-    /// respectively.
-    #[brw(magic(0x00u8))]
-    TYPE_NULL(ResTypeNullType),
-    /// The 'data' holds a ResTable_ref, a reference to another resource table entry.
-    #[brw(magic(0x01u8))]
-    TYPE_REFERENCE(ResTable_ref),
-    /// The 'data' holds an attribute resource identifier.
-    #[brw(magic(0x02u8))]
-    TYPE_ATTRIBUTE(u32),
-    /// The 'data' holds a ResStringPool_ref, a reference into the containing resource table's global value string pool.
-    #[brw(magic(0x03u8))]
-    TYPE_STRING(ResStringPool_ref),
-    /// The 'data' holds a single-precision floating point number.
-    #[brw(magic(0x04u8))]
-    TYPE_FLOAT(f32),
-    /// The 'data' holds a complex number encoding a dimension value, such as "100in".
-    #[brw(magic(0x05u8))]
-    TYPE_DIMENSION(u32),
-    /// The 'data' holds a complex number encoding a fraction of a container.
-    #[brw(magic(0x06u8))]
-    TYPE_FRACTION(u32),
-    /// The 'data' holds a dynamic ResTable_ref which needs to be resolved before it can be used
-    /// like a TYPE_REFERENCE.
-    #[brw(magic(0x07u8))]
-    TYPE_DYNAMIC_REFERENCE(ResTable_ref),
-    /// The 'data' holds an attribute resource identifier, which needs to be resolved before it can
-    /// be used like a TYPE_ATTRIBUTE.
-    #[brw(magic(0x08u8))]
-    TYPE_DYNAMIC_ATTRIBUTE(u32),
-    /// The 'data' is a raw integer value of the form n..n.
-    #[brw(magic(0x010u8))]
-    TYPE_INT_DEC(u32),
-    /// The 'data' is a raw integer value of the form 0xn..n.
-    #[brw(magic(0x11u8))]
-    TYPE_INT_HEX(u32),
-    /// The 'data' is either 0 or 1, for input "false" or "true" respectively.
-    #[brw(magic(0x12u8))]
-    TYPE_INT_BOOLEAN(ResTypeBoolType),
-    /// The 'data' is a raw integer value of the form #aarrggbb.
-    #[brw(magic(0x1cu8))]
-    TYPE_INT_COLOR_ARGB8(u32),
-    /// The 'data' is a raw integer value of the form #rrggbb.
-    #[brw(magic(0x1du8))]
-    TYPE_INT_COLOR_RGB8(u32),
-    /// The 'data' is a raw integer value of the form #argb.
-    #[brw(magic(0x1eu8))]
-    TYPE_INT_COLOR_ARGB4(u32),
-    /// The 'data' is a raw integer value of the form #rgb.
-    #[brw(magic(0x1fu8))]
-    TYPE_INT_COLOR_RGB4(u32),
 }
 
 #[cfg(test)]
