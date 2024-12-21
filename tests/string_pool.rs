@@ -91,7 +91,7 @@ fn test_read_string_pool_string8_normal() {
     let mut reader = Cursor::new(b"\x0d\x0dHello, World!\x00");
     let value: StringPoolString8 = reader.read_le().unwrap();
 
-    assert_eq!(value.get_string_owned().unwrap(), "Hello, World!");
+    assert_eq!(value.string, "Hello, World!");
 }
 
 #[test]
@@ -103,7 +103,7 @@ fn test_read_string_pool_string8_max_length() {
     let mut reader = Cursor::new(test_input);
     let value: StringPoolString8 = reader.read_le().unwrap();
 
-    assert_eq!(value.get_string_owned().unwrap(), test_str);
+    assert_eq!(value.string, test_str);
 }
 
 #[test]
@@ -115,7 +115,7 @@ fn test_read_string_pool_string8_very_long() {
     let mut reader = Cursor::new(test_input);
     let value: StringPoolString8 = reader.read_le().unwrap();
 
-    assert_eq!(value.get_string_owned().unwrap(), test_str);
+    assert_eq!(value.string, test_str);
 }
 
 #[test]
@@ -125,7 +125,7 @@ fn test_read_string_pool_string16_normal() {
     );
     let value: StringPoolString16 = reader.read_le().unwrap();
 
-    assert_eq!(value.get_string().unwrap(), "Hello, World!");
+    assert_eq!(value.string, "Hello, World!");
 }
 
 #[test]
@@ -139,7 +139,7 @@ fn test_read_string_pool_string16_very_long() {
     let value: StringPoolString16 = reader.read_le().unwrap();
 
     assert_eq!(
-        value.get_string().unwrap(),
+        value.string,
         String::from_utf16(
             test_data
                 .chunks_exact(2)
@@ -156,7 +156,9 @@ fn test_write_string_pool_string8_normal() {
     let mut writer = Cursor::new(Vec::new());
 
     writer
-        .write_le(&StringPoolString8::new("Hello, World!".to_string()).unwrap())
+        .write_le(&StringPoolString8 {
+            string: "Hello, World!".to_string(),
+        })
         .unwrap();
 
     assert_eq!(writer.into_inner(), b"\x0d\x0dHello, World!\x00")
@@ -169,7 +171,9 @@ fn test_write_string_pool_string8_max_length() {
     let test_str = "A".repeat(0x7fff);
 
     writer
-        .write_le(&StringPoolString8::new(test_str.clone()).unwrap())
+        .write_le(&StringPoolString8 {
+            string: test_str.clone(),
+        })
         .unwrap();
 
     let mut test_input = b"\xff\xff\xff\xff".to_vec();
@@ -186,7 +190,9 @@ fn test_write_string_pool_string8_very_long() {
     let test_str = "A".repeat(0x0501);
 
     writer
-        .write_le(&StringPoolString8::new(test_str.clone()).unwrap())
+        .write_le(&StringPoolString8 {
+            string: test_str.clone(),
+        })
         .unwrap();
 
     let mut test_input = b"\x85\x01\x85\x01".to_vec();
@@ -200,7 +206,9 @@ fn test_write_string_pool_string16_normal() {
     let mut writer = Cursor::new(Vec::new());
 
     writer
-        .write_le(&StringPoolString16::new("Hello, World!".to_string()).unwrap())
+        .write_le(&StringPoolString16 {
+            string: "Hello, World!".to_string(),
+        })
         .unwrap();
     assert_eq!(
         writer.into_inner(),
@@ -224,7 +232,9 @@ fn test_write_string_pool_string16_very_long() {
     .unwrap();
 
     writer
-        .write_le(&StringPoolString16::new(test_str.clone()).unwrap())
+        .write_le(&StringPoolString16 {
+            string: test_str.clone(),
+        })
         .unwrap();
 
     let mut test_input = b"\x01\x80\x01\x00".to_vec();
@@ -234,3 +244,4 @@ fn test_write_string_pool_string16_very_long() {
 
     assert_eq!(writer.into_inner(), test_input);
 }
+// TODO: test more interesting utf8 stuff

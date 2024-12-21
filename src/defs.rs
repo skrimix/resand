@@ -36,6 +36,15 @@ pub struct ResChunk_header {
     pub size: u32,
 }
 
+impl ResChunk_header {
+    pub fn get_header_offset(pos: u64) -> u64 {
+        if pos <= 8 {
+            return 0;
+        }
+        pos - 8
+    }
+}
+
 #[derive(Debug, PartialEq, BinRead, BinWrite)]
 pub enum ResType {
     #[brw(magic(0x0000u16))]
