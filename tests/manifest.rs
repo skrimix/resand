@@ -15,13 +15,15 @@
     along with this program.  If not, see <https://www.gnu.org/licenses/>.
 */
 
-use std::{
-    io::{Cursor, Seek},
-    path::PathBuf,
-};
+use std::io::{Cursor, Seek, SeekFrom};
 
 use binrw::{BinRead, BinWrite};
-use libaxml::{defs::ResChunk_header, string_pool::StringPool};
+use libaxml::{
+    defs::{ResChunk_header, ResType, ResTypeValue},
+    string_pool::StringPool,
+    xmltree::RawXMLTree,
+};
+use xmltree::{Element, EmitterConfig};
 
 #[test]
 fn test_android_manifest() {
@@ -29,34 +31,66 @@ fn test_android_manifest() {
 
     let mut stream = Cursor::new(data);
 
-    let header = ResChunk_header::read_le(&mut stream);
+    let header = ResChunk_header::read_le(&mut stream).unwrap();
 
-    let h_pos = stream.position();
+    let _h_pos = stream.position();
 
-    let sph = ResChunk_header::read_le(&mut stream).unwrap();
+    //dbg!(&header);
 
-    dbg!("hi");
-    dbg!(sph.headerSize);
-    let string_pool = StringPool::read_options(&mut stream, binrw::Endian::Little, ()).unwrap();
+    if let ResTypeValue::XML(xml_tree) = header.data {
+        let el: Element = xml_tree.try_into().unwrap();
+        let mut output = Cursor::new(Vec::new());
+        el.write_with_config(&mut output, EmitterConfig::new().perform_indent(true))
+            .unwrap();
 
-    let mut writer = Cursor::new(Vec::new());
+        let data = output.into_inner();
 
-    dbg!("hi");
-    string_pool
-        .write_options(&mut writer, binrw::Endian::Little, ())
-        .unwrap();
+        std::fs::write(format!("p{}", 0), &data).unwrap();
+        println!("{}", String::from_utf8(data).unwrap());
 
-    let mut s2 = Cursor::new(writer.into_inner());
+        let conv: RawXMLTree = el.try_into().unwrap();
 
-    dbg!("hi");
+        let header = ResChunk_header {
+            data: ResTypeValue::XML(conv),
+        };
 
-    let new_pool = StringPool::read_options(&mut s2, binrw::Endian::Little, ()).unwrap();
+        let mut output = Cursor::new(Vec::new());
 
-    let strings = string_pool.get_strings();
-    let s2 = new_pool.get_strings();
+        header.write_le(&mut output).unwrap();
 
-    dbg!(strings);
-    dbg!(s2);
+        print_xml(&output.into_inner(), 1);
+    }
 
-    //panic!()
+    panic!();
+}
+
+fn print_xml(data: &[u8], index: usize) {
+    let mut stream = Cursor::new(data);
+
+    let header = ResChunk_header::read_le(&mut stream).unwrap();
+
+    let _h_pos = stream.position();
+
+    //dbg!(&header);
+
+    if let ResTypeValue::XML(xml_tree) = header.data {
+        let el: Element = xml_tree.try_into().unwrap();
+        let mut output = Cursor::new(Vec::new());
+        el.write_with_config(&mut output, EmitterConfig::new().perform_indent(true))
+            .unwrap();
+
+        let data = output.into_inner();
+
+        std::fs::write(format!("p{}", index), &data).unwrap();
+        println!("{}", String::from_utf8(data).unwrap());
+    }
+}
+
+#[test]
+fn test_android_manifest_full() {
+    let data = include_bytes!("data/AndroidManifest.xml");
+
+    let mut stream = Cursor::new(data);
+
+    let main_header = ResChunk_header::read_le(&mut stream).unwrap();
 }

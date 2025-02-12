@@ -23,14 +23,28 @@ use std::{
 
 use binrw::{binrw, file_ptr::parse_from_iter, BinRead, BinResult, BinWrite, VecArgs};
 
-use crate::defs::ResChunk_header;
+use crate::{align, defs::ResChunk_header};
 
-#[derive(Debug, BinRead, BinWrite, PartialEq)]
+#[derive(Debug, BinRead, BinWrite, PartialEq, Clone, Copy)]
 pub struct ResStringPool_ref {
     pub index: u32,
 }
 
-#[derive(Debug, BinRead, BinWrite, PartialEq)]
+impl ResStringPool_ref {
+    pub fn resolve(&self, strings: &[String]) -> Option<String> {
+        if self.index == 0xffffffff {
+            return None;
+        }
+
+        return strings.get(self.index as usize).cloned();
+    }
+
+    pub fn null() -> ResStringPool_ref {
+        ResStringPool_ref { index: 0xffffffff }
+    }
+}
+
+#[derive(Debug, BinRead, BinWrite, PartialEq, Default, Copy, Clone)]
 pub struct StringPoolFlags {
     pub flags: u32,
 }
@@ -41,14 +55,15 @@ impl StringPoolFlags {
         self.flags & (1 << 0) != 0
     }
 
-    /// String pool is encoded in UTF-8
+    /// String pool is encoded in UTF-8.
     pub fn utf8(&self) -> bool {
         self.flags & (1 << 8) != 0
     }
 
-    pub fn new(utf8: bool, sorted: bool) -> Self {
+    /// Create new StringPoolFlags from separate utf8 and sorted boolean flags.
+    pub fn new(sorted: bool, utf8: bool) -> Self {
         Self {
-            flags: (utf8 as u32) | (sorted as u32) << 8,
+            flags: (sorted as u32) | (utf8 as u32) << 8,
         }
     }
 }
@@ -56,17 +71,14 @@ impl StringPoolFlags {
 /// A set of strings that can be referenced by others through a ResStringPool_ref.
 ///
 /// Definition for a pool of strings. The data of this chunk is an array of u32 providing indices
-/// into the pool, relative to stringsStart. At stringsStart are all of the UTF-16 strings
-/// concatenated together; each starts with a u16 of the string's length and each ends with a
-/// 0x0000 terminator. If a string is > 32767 characters, the high bit of the length is set meaning
-/// to take those 15 bits as a high word and it will be followed by another u16 containg the low
-/// word.
+/// into the pool, relative to stringsStart. At stringsStart are all of the UTF-8 or UTF-16 strings
+/// concatenated together. See TODO
 ///
 /// If styleCount is not zero, then immediately following the array of u32 indices into the string
 /// table is another array of indices into a style table starting at stylesStart. Each entry in the
 /// style table is an arry of ResStringPool_span structures.
 #[binrw]
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Default, Clone)]
 #[brw(stream = s)]
 #[br(assert(stringCount == (string_indices.len() as u32)))]
 #[br(assert(styleCount == (style_indices.len() as u32)))]
@@ -108,7 +120,7 @@ pub struct StringPool {
     #[bw(calc = calc_style_indices(styleCount))]
     style_indices: Vec<u32>,
 
-    #[br(parse_with = StringPoolStrings::parse, args((flags.utf8(), string_indices.clone())))]
+    #[br(parse_with = StringPoolStrings::parse, args((flags.utf8(), &string_indices)))]
     #[bw(write_with = |sps,w,e,d| StringPoolStrings::write((&string_indices,sps), w, e, d))]
     #[br(seek_before(SeekFrom::Start(header_offset + (stringsStart as u64))))]
     pub strings: StringPoolStrings,
@@ -117,13 +129,10 @@ pub struct StringPool {
     pub styles: Vec<ResStringPool_span>,
 }
 
-pub fn align(pos: u64, alignment: u64) -> u64 {
-    let remaning = pos % alignment;
-    if remaning == 0 {
-        return pos;
+impl StringPool {
+    pub fn get_header_size() -> usize {
+        0x1c
     }
-
-    pos + (alignment - remaning)
 }
 
 pub fn calc_strings_start(
@@ -232,23 +241,52 @@ impl StringPool {
 
         strings
     }
+
+    pub fn push_string(&mut self, string: String) -> usize {
+        match self.strings {
+            StringPoolStrings::UTF16(ref mut utf16) => {
+                utf16.push(StringPoolString16 { string });
+                utf16.len() - 1
+            }
+            StringPoolStrings::UTF8(ref mut utf8) => {
+                utf8.push(StringPoolString8 { string });
+                utf8.len() - 1
+            }
+        }
+    }
+
+    pub fn allocate(&mut self, string: String) -> ResStringPool_ref {
+        let val = self.get_strings().iter().position(|s| s == &string);
+        if let Some(v) = val {
+            return ResStringPool_ref { index: v as u32 };
+        }
+        ResStringPool_ref {
+            index: self.push_string(string) as u32,
+        }
+    }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum StringPoolStrings {
     UTF8(Vec<StringPoolString8>),
     UTF16(Vec<StringPoolString16>),
 }
 
+impl Default for StringPoolStrings {
+    fn default() -> Self {
+        Self::UTF16(Vec::new())
+    }
+}
+
 impl StringPoolStrings {
     #[binrw::parser(reader, endian)]
-    fn parse((utf8, string_indices): (bool, Vec<u32>)) -> binrw::BinResult<Self> {
+    fn parse((utf8, string_indices): (bool, &[u32])) -> binrw::BinResult<Self> {
         if utf8 {
             let strings: Vec<StringPoolString8> =
-                parse_from_iter(string_indices.clone().into_iter())(reader, endian, ())?;
+                parse_from_iter(string_indices.iter().cloned())(reader, endian, ())?;
             Ok(StringPoolStrings::UTF8(strings))
         } else {
-            let strings = parse_from_iter(string_indices.clone().into_iter())(reader, endian, ())?;
+            let strings = parse_from_iter(string_indices.iter().cloned())(reader, endian, ())?;
 
             Ok(StringPoolStrings::UTF16(strings))
         }
@@ -316,6 +354,7 @@ pub struct StringPoolString16 {
     #[br(parse_with=read_utf16_str)]
     #[br(args(new_length16(length1, length2)))]
     pub string: String,
+
     #[br(temp)]
     #[bw(calc = 0)]
     #[br(assert(null == 0))]
@@ -373,6 +412,7 @@ pub struct StringPoolString8 {
     #[br(parse_with=read_utf8_str)]
     #[br(args(new_length8(bytelength_1, bytelength_2)))]
     pub string: String,
+
     #[br(temp)]
     #[bw(calc = 0)]
     #[br(assert(null == 0))]
@@ -502,7 +542,7 @@ pub fn new_length16(l1: u16, l2: Option<u16>) -> u32 {
 }
 
 /// This structure defines a span of style information associated with a string in the pool.
-#[derive(Debug, PartialEq, BinWrite, BinRead)]
+#[derive(Debug, PartialEq, BinWrite, BinRead, Copy, Clone)]
 pub struct ResStringPool_span {
     /// This is the name of the span -- that is, the name of the XML tag that defined it. The
     /// special value END (0xffffffff) indicates the end of an array of spans.

@@ -18,8 +18,12 @@
 use std::io::Cursor;
 
 use binrw::{BinReaderExt, BinWriterExt};
-use libaxml::string_pool::{
-    ResStringPool_ref, ResStringPool_span, StringPoolFlags, StringPoolString16, StringPoolString8,
+use libaxml::{
+    defs::ResChunk_header,
+    string_pool::{
+        ResStringPool_ref, ResStringPool_span, StringPool, StringPoolFlags, StringPoolString16,
+        StringPoolString8, StringPoolStrings,
+    },
 };
 
 #[test]
@@ -41,7 +45,7 @@ fn test_write_res_string_pool_ref() {
 }
 
 #[test]
-fn test_string_pool_flags() {
+fn test_string_pool_flags_from_int() {
     let value = StringPoolFlags { flags: 0 };
     assert!(!value.sorted());
     assert!(!value.utf8());
@@ -57,6 +61,29 @@ fn test_string_pool_flags() {
     let value = StringPoolFlags { flags: 0x101 };
     assert!(value.sorted());
     assert!(value.utf8());
+}
+
+#[test]
+fn test_string_pool_flags_to_int() {
+    let flags = StringPoolFlags::new(false, false);
+    assert!(!flags.sorted());
+    assert!(!flags.utf8());
+    assert_eq!(flags.flags, 0x0);
+
+    let flags = StringPoolFlags::new(true, false);
+    assert!(flags.sorted());
+    assert!(!flags.utf8());
+    assert_eq!(flags.flags, 0x1);
+
+    let flags = StringPoolFlags::new(false, true);
+    assert!(!flags.sorted());
+    assert!(flags.utf8());
+    assert_eq!(flags.flags, 0x100);
+
+    let flags = StringPoolFlags::new(true, true);
+    assert!(flags.sorted());
+    assert!(flags.utf8());
+    assert_eq!(flags.flags, 0x101);
 }
 
 #[test]

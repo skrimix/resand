@@ -31,8 +31,6 @@ fn res_value_read_null_undefined() {
     let mut reader = Cursor::new(b"\x08\x00\x00\x00\x00\x00\x00\x00");
     let value: Res_value = reader.read_le().unwrap();
 
-    assert_eq!(value.size, 8);
-    assert_eq!(value.res0, 0);
     assert_eq!(
         value.data,
         ResValueType::TYPE_NULL(ResTypeNullType::DATA_NULL_UNDEFINED)
@@ -56,8 +54,6 @@ fn res_value_read_null_empty() {
     let mut reader = Cursor::new(b"\x08\x00\x00\x00\x01\x00\x00\x00");
     let value: Res_value = reader.read_le().unwrap();
 
-    assert_eq!(value.size, 8);
-    assert_eq!(value.res0, 0);
     assert_eq!(
         value.data,
         ResValueType::TYPE_NULL(ResTypeNullType::DATA_NULL_EMPTY)
@@ -104,8 +100,6 @@ fn res_value_read_reference() {
     let mut reader = Cursor::new(b"\x08\x00\x00\x01\x58\x20\x15\x01");
     let value: Res_value = reader.read_le().unwrap();
 
-    assert_eq!(value.size, 8);
-    assert_eq!(value.res0, 0);
     assert_eq!(
         value.data,
         ResValueType::TYPE_REFERENCE(ResTable_ref {
@@ -137,8 +131,6 @@ fn res_value_read_attribute() {
     let mut reader = Cursor::new(b"\x08\x00\x00\x02\x01\x04\x00\x00");
     let value: Res_value = reader.read_le().unwrap();
 
-    assert_eq!(value.size, 8);
-    assert_eq!(value.res0, 0);
     assert_eq!(value.data, ResValueType::TYPE_ATTRIBUTE(0x0401));
 }
 
@@ -157,8 +149,6 @@ fn res_value_read_string() {
     let mut reader = Cursor::new(b"\x08\x00\x00\x03\x00\x01\x00\x00");
     let value: Res_value = reader.read_le().unwrap();
 
-    assert_eq!(value.size, 8);
-    assert_eq!(value.res0, 0);
     assert_eq!(
         value.data,
         ResValueType::TYPE_STRING(ResStringPool_ref { index: 0x00000100 })
@@ -182,8 +172,6 @@ fn res_value_read_float() {
     let mut reader = Cursor::new(b"\x08\x00\x00\x04\x00\x00\xc0\x3f");
     let value: Res_value = reader.read_le().unwrap();
 
-    assert_eq!(value.size, 8);
-    assert_eq!(value.res0, 0);
     assert_eq!(value.data, ResValueType::TYPE_FLOAT(1.5));
 }
 
@@ -201,8 +189,6 @@ fn res_value_read_dynamic_reference() {
     let mut reader = Cursor::new(b"\x08\x00\x00\x07\x72\x18\x61\xff");
     let value: Res_value = reader.read_le().unwrap();
 
-    assert_eq!(value.size, 8);
-    assert_eq!(value.res0, 0);
     assert_eq!(
         value.data,
         ResValueType::TYPE_DYNAMIC_REFERENCE(ResTable_ref {
@@ -234,8 +220,6 @@ fn res_value_read_dynamic_attribute() {
     let mut reader = Cursor::new(b"\x08\x00\x00\x08\xef\xbe\xad\x0b");
     let value: Res_value = reader.read_le().unwrap();
 
-    assert_eq!(value.size, 8);
-    assert_eq!(value.res0, 0);
     assert_eq!(value.data, ResValueType::TYPE_DYNAMIC_ATTRIBUTE(0x0badbeef));
 }
 
@@ -256,8 +240,6 @@ fn res_value_read_int_dec() {
     let mut reader = Cursor::new(b"\x08\x00\x00\x10\x78\x56\x34\x12");
     let value: Res_value = reader.read_le().unwrap();
 
-    assert_eq!(value.size, 8);
-    assert_eq!(value.res0, 0);
     assert_eq!(value.data, ResValueType::TYPE_INT_DEC(0x12345678));
 }
 
@@ -276,8 +258,6 @@ fn res_value_read_int_hex() {
     let mut reader = Cursor::new(b"\x08\x00\x00\x11\x32\x54\x76\x98");
     let value: Res_value = reader.read_le().unwrap();
 
-    assert_eq!(value.size, 8);
-    assert_eq!(value.res0, 0);
     assert_eq!(value.data, ResValueType::TYPE_INT_HEX(0x98765432));
 }
 
@@ -296,8 +276,6 @@ fn res_value_read_int_boolean_false() {
     let mut reader = Cursor::new(b"\x08\x00\x00\x12\x00\x00\x00\x00");
     let value: Res_value = reader.read_le().unwrap();
 
-    assert_eq!(value.size, 8);
-    assert_eq!(value.res0, 0);
     assert_eq!(
         value.data,
         ResValueType::TYPE_INT_BOOLEAN(ResTypeBoolType::FALSE)
@@ -321,8 +299,6 @@ fn res_value_read_int_boolean_true() {
     let mut reader = Cursor::new(b"\x08\x00\x00\x12\x01\x00\x00\x00");
     let value: Res_value = reader.read_le().unwrap();
 
-    assert_eq!(value.size, 8);
-    assert_eq!(value.res0, 0);
     assert_eq!(
         value.data,
         ResValueType::TYPE_INT_BOOLEAN(ResTypeBoolType::TRUE)
@@ -363,8 +339,6 @@ fn res_value_read_int_color_argb8() {
     let mut reader = Cursor::new(b"\x08\x00\x00\x1c\x25\x26\x27\x28");
     let value: Res_value = reader.read_le().unwrap();
 
-    assert_eq!(value.size, 8);
-    assert_eq!(value.res0, 0);
     assert_eq!(
         value.data,
         ResValueType::TYPE_INT_COLOR_ARGB8(ARGB8::new(0x28, 0x27, 0x26, 0x25))
@@ -396,8 +370,6 @@ fn res_value_read_int_color_rgb8() {
     let mut reader = Cursor::new(b"\x08\x00\x00\x1d\x25\x26\x27\x00");
     let value: Res_value = reader.read_le().unwrap();
 
-    assert_eq!(value.size, 8);
-    assert_eq!(value.res0, 0);
     assert_eq!(
         value.data,
         ResValueType::TYPE_INT_COLOR_RGB8(RGB8::new(0x27, 0x26, 0x25))
@@ -429,8 +401,6 @@ fn res_value_read_int_color_rgb4() {
     let mut reader = Cursor::new(b"\x08\x00\x00\x1f\x65\x02\x00\x00");
     let value: Res_value = reader.read_le().unwrap();
 
-    assert_eq!(value.size, 8);
-    assert_eq!(value.res0, 0);
     assert_eq!(
         value.data,
         ResValueType::TYPE_INT_COLOR_RGB4(RGB4::new(0x2, 0x6, 0x5))
@@ -463,8 +433,6 @@ fn res_value_read_int_color_argb4() {
     let mut reader = Cursor::new(b"\x08\x00\x00\x1e\x65\x92\x00\x00");
     let value: Res_value = reader.read_le().unwrap();
 
-    assert_eq!(value.size, 8);
-    assert_eq!(value.res0, 0);
     assert_eq!(
         value.data,
         ResValueType::TYPE_INT_COLOR_ARGB4(ARGB4::new(0x9, 0x2, 0x6, 0x5))

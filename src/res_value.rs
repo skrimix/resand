@@ -15,17 +15,29 @@
     along with this program.  If not, see <https://www.gnu.org/licenses/>.
 */
 
-use binrw::{BinRead, BinWrite};
+use std::{fmt::Display, num::ParseIntError, str::FromStr};
 
-use crate::{defs::ResTable_ref, string_pool::ResStringPool_ref};
+use binrw::{binrw, BinRead, BinWrite};
 
-#[derive(Debug, BinRead, BinWrite)]
+use crate::{
+    defs::ResTable_ref,
+    string_pool::{ResStringPool_ref, StringPool},
+};
+
+#[binrw]
+#[derive(Debug, PartialEq, Clone, Copy)]
 pub struct Res_value {
     /// Number of bytes in this structure.
-    pub size: u16,
+    #[br(temp)]
+    #[bw(calc = 8)]
+    #[br(assert(size==8))]
+    size: u16,
 
     /// Always set to 0.
-    pub res0: u8,
+    #[br(temp)]
+    #[bw(calc = 0)]
+    #[br(assert(res0==0))]
+    res0: u8,
 
     /// The data for this item, as interpreted according to dataType.
     pub data: ResValueType,
@@ -33,30 +45,59 @@ pub struct Res_value {
 
 impl Res_value {
     pub fn new(data: ResValueType) -> Self {
-        Self {
-            size: 8,
-            res0: 0,
-            data,
-        }
+        Self { data }
     }
 }
 
-#[derive(Debug, BinRead, BinWrite, PartialEq)]
+#[derive(Debug, BinRead, BinWrite, PartialEq, Copy, Clone)]
 pub enum ResTypeNullType {
     #[brw(magic(0u32))]
     DATA_NULL_UNDEFINED,
     #[brw(magic(1u32))]
     DATA_NULL_EMPTY,
 }
-#[derive(Debug, BinRead, BinWrite, PartialEq)]
+
+#[derive(Debug, BinRead, BinWrite, PartialEq, Copy, Clone)]
 pub enum ResTypeBoolType {
     #[brw(magic(0u32))]
     FALSE,
     #[brw(magic(1u32))]
     TRUE,
+    #[brw(magic(0xffffffffu32))]
+    NULL,
 }
 
-#[derive(Debug, BinRead, BinWrite, PartialEq)]
+impl Display for ResTypeBoolType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let str = match self {
+            ResTypeBoolType::NULL => "null",
+            ResTypeBoolType::TRUE => "true",
+            ResTypeBoolType::FALSE => "false",
+        };
+        write!(f, "{}", str)
+    }
+}
+
+#[derive(Debug)]
+pub struct InvalidBool {
+    pub input: String,
+}
+
+impl FromStr for ResTypeBoolType {
+    type Err = InvalidBool;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(match s {
+            "null" => Self::NULL,
+            "true" => Self::TRUE,
+            "false" => Self::FALSE,
+            _ => Err(InvalidBool {
+                input: s.to_string(),
+            })?,
+        })
+    }
+}
+
+#[derive(Debug, BinRead, BinWrite, PartialEq, Copy, Clone)]
 pub struct ARGB8 {
     pub aarrggbb: u32,
 }
@@ -81,7 +122,7 @@ impl ARGB8 {
     }
 }
 
-#[derive(Debug, BinRead, BinWrite, PartialEq)]
+#[derive(Debug, BinRead, BinWrite, PartialEq, Copy, Clone)]
 pub struct RGB8 {
     pub rrggbb: u32,
 }
@@ -103,7 +144,7 @@ impl RGB8 {
         (self.rrggbb) as u8
     }
 }
-#[derive(Debug, BinRead, BinWrite, PartialEq)]
+#[derive(Debug, BinRead, BinWrite, PartialEq, Copy, Clone)]
 pub struct ARGB4 {
     pub argb: u32,
 }
@@ -129,7 +170,7 @@ impl ARGB4 {
     }
 }
 
-#[derive(Debug, BinRead, BinWrite, PartialEq)]
+#[derive(Debug, BinRead, BinWrite, PartialEq, Clone, Copy)]
 pub struct RGB4 {
     pub rgb: u32,
 }
@@ -165,11 +206,12 @@ impl From<ResTypeBoolType> for bool {
         match value {
             ResTypeBoolType::TRUE => true,
             ResTypeBoolType::FALSE => false,
+            ResTypeBoolType::NULL => false,
         }
     }
 }
 
-#[derive(Debug, BinRead, BinWrite, PartialEq)]
+#[derive(Debug, BinRead, BinWrite, PartialEq, Copy, Clone)]
 pub enum ResValueType {
     /// The 'data' is either 0 or 1, specifying this resource is either undefined or empty,
     /// respectively.
@@ -222,4 +264,56 @@ pub enum ResValueType {
     /// The 'data' is a raw integer value of the form #rgb.
     #[brw(magic(0x1fu8))]
     TYPE_INT_COLOR_RGB4(RGB4),
+}
+
+impl ResValueType {
+    pub fn resolve(&self, strings: &[String]) -> Option<String> {
+        match self {
+            ResValueType::TYPE_STRING(v) => v.resolve(strings),
+            ResValueType::TYPE_INT_DEC(v) => Some(v.to_string()),
+            ResValueType::TYPE_INT_HEX(v) => Some(format!("{:#x}", v)),
+            ResValueType::TYPE_INT_BOOLEAN(v) => Some(v.to_string()),
+            ResValueType::TYPE_REFERENCE(v) => Some(v.to_string()),
+            ResValueType::TYPE_FLOAT(v) => Some(v.to_string()),
+            _ => {
+                dbg!(self);
+                todo!()
+            }
+        }
+    }
+}
+
+#[derive(Debug)]
+pub enum InvalidResType {
+    InvalidInteger(ParseIntError),
+}
+
+impl From<ParseIntError> for InvalidResType {
+    fn from(value: ParseIntError) -> Self {
+        Self::InvalidInteger(value)
+    }
+}
+
+impl ResValueType {
+    pub fn unresolve(string: &str, pool: &mut StringPool) -> Self {
+        if let Ok(reference) = string.parse() {
+            return ResValueType::TYPE_REFERENCE(reference);
+        }
+        if let Ok(bool) = string.parse() {
+            return ResValueType::TYPE_INT_BOOLEAN(bool);
+        }
+
+        if let Ok(int) = string.parse() {
+            return ResValueType::TYPE_INT_DEC(int);
+        }
+
+        if let Ok(int) = u32::from_str_radix(string.trim_start_matches("0x"), 16) {
+            return ResValueType::TYPE_INT_HEX(int);
+        }
+        if let Ok(float) = string.parse() {
+            return ResValueType::TYPE_FLOAT(float);
+        }
+
+        ResValueType::TYPE_STRING(pool.allocate(string.to_string()))
+    }
 }
