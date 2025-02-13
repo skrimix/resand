@@ -1,10 +1,10 @@
 use std::collections::HashMap;
 
 use binrw::{binrw, BinRead, BinResult, BinWrite};
-use xmltree::Element;
+use xmltree::{Element, Namespace};
 
 use crate::{
-    defs::{ResChunk_header, ResType, ResTypeValue},
+    defs::{ResChunk_header, ResTypeValue},
     res_value::{ResValueType, Res_value},
     string_pool::{ResStringPool_ref, StringPool},
 };
@@ -239,6 +239,7 @@ pub fn parse_chunks(size: u32) -> BinResult<Vec<ResChunk_header>> {
 #[derive(Debug)]
 pub enum TreeToElementError {
     NoElements,
+    InvalidNameSpace,
     NoStringPool,
     UnbalancedElements,
     NoRootElement,
@@ -256,24 +257,67 @@ impl From<NodeToElementError> for TreeToElementError {
     }
 }
 
-fn process_node(element: &Element, chunks: &mut Vec<ResChunk_header>, str_pool: &mut StringPool) {
+fn process_node(
+    element: &Element,
+    chunks: &mut Vec<ResChunk_header>,
+    str_pool: &mut StringPool,
+    parent_namespace: Option<&Namespace>,
+) {
     let el = ResXMLTree_attrExt::from_element(element, str_pool);
     let node = el.node;
     let ns = el.ns;
     let name = el.name;
+
+    let mut new_namespaces: Namespace = Namespace::empty();
+
+    if element.namespaces.as_ref() != parent_namespace {
+        if let Some(el_ns) = &element.namespaces {
+            for namespace in el_ns {
+                if let Some(p_ns) = parent_namespace {
+                    if !p_ns.contains(namespace.0) {
+                        new_namespaces.put(namespace.0, namespace.1);
+                    }
+                } else {
+                    new_namespaces.put(namespace.0, namespace.1);
+                }
+            }
+        }
+
+        for new_ns in &new_namespaces {
+            chunks.push(
+                ResTypeValue::START_NAMESPACE(ResXMLTree_namespaceExt {
+                    node,
+                    prefix: str_pool.allocate(new_ns.0.to_string()),
+                    uri: str_pool.allocate(new_ns.1.to_string()),
+                })
+                .into(),
+            );
+        }
+    }
     let start_element = ResTypeValue::START_ELEMENT(el);
 
     chunks.push(start_element.into());
 
     for child in &element.children {
         if let xmltree::XMLNode::Element(ref child_element) = child {
-            process_node(child_element, chunks, str_pool);
+            process_node(child_element, chunks, str_pool, element.namespaces.as_ref());
         }
     }
 
     let end_element = ResTypeValue::END_ELEMENT(ResXMLTree_endElementExt { node, ns, name });
 
     chunks.push(end_element.into());
+
+    for new_ns in &new_namespaces {
+        chunks.push(
+            ResTypeValue::END_NAMESPACE(ResXMLTree_namespaceExt {
+                node,
+                prefix: str_pool.allocate(new_ns.0.to_string()),
+                uri: str_pool.allocate(new_ns.1.to_string()),
+            })
+            .into(),
+        );
+    }
 }
 
 impl TryFrom<Element> for RawXMLTree {
@@ -282,7 +326,7 @@ impl TryFrom<Element> for RawXMLTree {
         let mut str_pool = StringPool::default();
         let mut chunks: Vec<ResChunk_header> = Vec::new();
 
-        process_node(&value, &mut chunks, &mut str_pool);
+        process_node(&value, &mut chunks, &mut str_pool, None);
 
         chunks.insert(0, ResTypeValue::STRING_POOL(str_pool).into());
 
@@ -314,12 +358,15 @@ impl TryFrom<RawXMLTree> for xmltree::Element {
 
         let mut stack: Vec<xmltree::Element> = Vec::new();
 
+        let mut namespaces: Namespace = Namespace::empty();
+
         // skip first string pool and possible resource map
         for chunk in value.chunks.into_iter().skip(skip) {
             match chunk.data {
                 ResTypeValue::START_ELEMENT(node) => {
                     // Convert the start element node to an xmltree::Element
-                    let el = node.to_element(&strings)?;
+                    let mut el = node.to_element(&strings)?;
+                    el.namespaces = Some(namespaces.clone());
                     stack.push(el);
                 }
                 ResTypeValue::END_ELEMENT(_) => {
@@ -335,8 +382,26 @@ impl TryFrom<RawXMLTree> for xmltree::Element {
                         return Err(TreeToElementError::UnbalancedElements);
                     }
                 }
-                ResTypeValue::START_NAMESPACE(_) => {}
-                ResTypeValue::END_NAMESPACE(_) => {}
+                ResTypeValue::START_NAMESPACE(ns) => {
+                    let prefix = ns
+                        .prefix
+                        .resolve(&strings)
+                        .ok_or(TreeToElementError::InvalidNameSpace)?;
+                    let uri = ns
+                        .uri
+                        .resolve(&strings)
+                        .ok_or(TreeToElementError::InvalidNameSpace)?;
+
+                    namespaces.put(prefix, uri);
+                }
+                ResTypeValue::END_NAMESPACE(ns) => {
+                    let prefix = ns
+                        .prefix
+                        .resolve(&strings)
+                        .ok_or(TreeToElementError::InvalidNameSpace)?;
+
+                    namespaces.0.remove(&prefix);
+                }
                 _ => {
                     dbg!(chunk);
                     todo!();

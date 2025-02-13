@@ -227,6 +227,8 @@ pub fn write_res_type_value(value: &ResTypeValue) -> BinResult<()> {
         ResTypeValue::START_ELEMENT(st) => st.write_options(writer, endian, ())?,
         ResTypeValue::END_ELEMENT(ee) => ee.write_options(writer, endian, ())?,
         ResTypeValue::XML(xml) => xml.write_options(writer, endian, ())?,
+        ResTypeValue::START_NAMESPACE(sn) => sn.write_options(writer, endian, ())?,
+        ResTypeValue::END_NAMESPACE(en) => en.write_options(writer, endian, ())?,
         v => {
             dbg!(v);
             todo!()
