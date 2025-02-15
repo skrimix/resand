@@ -29,20 +29,11 @@ use crate::{
     },
 };
 
-// So that identifier names can be the same
-
 /// Header that appears at the front of every data chunk in a resource.
-//#[binrw]#
 #[binread]
 #[br(stream = s)]
-//#[brw(stream = s)]
 #[derive(Debug, PartialEq, Clone)]
 pub struct ResChunk_header {
-    #[br(temp)]
-    #[br(try_calc = s.stream_position())]
-    //#[brw(try_calc=s.stream_position())]
-    //#[brw(restore_position)]
-    start_pos: u64,
     /// Type identifier for this chunk. The meaning of this value depends on the containing chunk.
     #[br(temp)]
     pub r#type: ResType,
@@ -86,7 +77,7 @@ impl BinWrite for ResChunk_header {
 
         let end_pos = writer.stream_position()?;
 
-        let size = (end_pos - start_pos) as u32;
+        let size = (end_pos - start_pos) as u32 + 8;
 
         writer.seek(SeekFrom::Start(size_pos))?;
 
@@ -138,7 +129,7 @@ impl Display for NotImplimentedError {
 }
 
 #[binrw]
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone, Default)]
 #[br(import(size: u32))]
 /// This contains a uint32_t array mapping strings in the string pool back to resource identifiers.
 /// It is optional.
@@ -146,12 +137,16 @@ impl Display for NotImplimentedError {
 /// Not actually optional though, apk will fail to install without it.
 pub struct ResourceMap {
     #[br(count=(size-ResourceMap::get_header_size() as u32) / 4)]
-    pub mapping: Vec<u32>,
+    pub mapping: Vec<ResTable_ref>,
 }
 
 impl ResourceMap {
     pub fn get_header_size() -> usize {
         0x8
+    }
+
+    pub fn new() -> ResourceMap {
+        ResourceMap::default()
     }
 }
 
@@ -202,6 +197,7 @@ pub fn parse_res_type_value(res_type: &ResType, size: u32) -> BinResult<ResTypeV
             ResTypeValue::STRING_POOL(StringPool::read_options(reader, endian, ())?)
         }
         ResType::RES_XML_RESOURCE_MAP_TYPE => {
+            dbg!(size);
             ResTypeValue::RESOURCE_MAP(ResourceMap::read_options(reader, endian, (size,))?)
         }
         ResType::RES_XML_START_NAMESPACE_TYPE => ResTypeValue::START_NAMESPACE(
@@ -229,6 +225,7 @@ pub fn write_res_type_value(value: &ResTypeValue) -> BinResult<()> {
         ResTypeValue::XML(xml) => xml.write_options(writer, endian, ())?,
         ResTypeValue::START_NAMESPACE(sn) => sn.write_options(writer, endian, ())?,
         ResTypeValue::END_NAMESPACE(en) => en.write_options(writer, endian, ())?,
+        ResTypeValue::RESOURCE_MAP(rm) => rm.write_options(writer, endian, ())?,
         v => {
             dbg!(v);
             todo!()
@@ -292,6 +289,31 @@ pub enum ResType {
     RES_TABLE_STAGED_ALIAS_TYPE,
 }
 
+impl Display for ResType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let str = match self {
+            ResType::RES_NULL_TYPE => "null",
+            ResType::RES_STRING_POOL_TYPE => "string pool",
+            ResType::RES_TABLE_TYPE => "table",
+            ResType::RES_XML_TYPE => "xml",
+            ResType::RES_XML_START_NAMESPACE_TYPE => "xml start namespace",
+            ResType::RES_XML_END_NAMESPACE_TYPE => "xml end namespace",
+            ResType::RES_XML_START_ELEMENT_TYPE => "xml start element",
+            ResType::RES_XML_END_ELEMENT_TYPE => "xml end element",
+            ResType::RES_XML_CDATA_TYPE => "xml comment",
+            ResType::RES_XML_RESOURCE_MAP_TYPE => "xml resource map",
+            ResType::RES_TABLE_PACKAGE_TYPE => "table package",
+            ResType::RES_TABLE_TYPE_TYPE => "table type",
+            ResType::RES_TABLE_TYPE_SPEC_TYPE => "table spec type",
+            ResType::RES_TABLE_LIBRARY_TYPE => "table library",
+            ResType::RES_TABLE_OVERLAYABLE_TYPE => "table overlayable",
+            ResType::RES_TABLE_OVERLAYABLE_POLICY_TYPE => "table overlayable policy",
+            ResType::RES_TABLE_STAGED_ALIAS_TYPE => "table staged alias",
+        };
+        write!(f, "{}", str)
+    }
+}
+
 /// This is a reference to a unique entry (a ResTable_entry structure) in a resource table. The
 /// value is structured as 0xpptteee, where pp is the package index, tt is the type index in that
 /// package, and eeee is the entry index in that type. The package and type values start a 1 for
@@ -345,7 +367,7 @@ impl FromStr for ResTable_ref {
         }
         let rest: String = s.chars().skip(1).collect();
 
-        let val: u32 = rest.parse().map_err(ParseResTable_refError::Int)?;
+        let val: u32 = u32::from_str_radix(&rest, 16).map_err(ParseResTable_refError::Int)?;
 
         Ok(val.into())
     }

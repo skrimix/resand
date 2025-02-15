@@ -1,10 +1,14 @@
-use std::collections::HashMap;
+use std::{
+    collections::HashMap,
+    io::{Cursor, Read, Seek, Write},
+};
 
 use binrw::{binrw, BinRead, BinResult, BinWrite};
+use thiserror::Error;
 use xmltree::{Element, Namespace};
 
 use crate::{
-    defs::{ResChunk_header, ResTypeValue},
+    defs::{ResChunk_header, ResType, ResTypeValue, ResourceMap},
     res_value::{ResValueType, Res_value},
     string_pool::{ResStringPool_ref, StringPool},
 };
@@ -136,12 +140,20 @@ impl ResXMLTree_attrExt {
     ) -> Result<Element, NodeToElementError> {
         let mut attributes: HashMap<String, String> = HashMap::new();
         for attr in &self.attributes {
+            let key = attr
+                .name
+                .resolve(strings)
+                .ok_or(NodeToElementError::NoAttrName {
+                    index: attr.name.index,
+                })?;
+
+            let key_str = if let Some(n) = attr.ns.resolve(strings) {
+                format!("{}:{}", n.split("/").last().unwrap_or(&n), key)
+            } else {
+                key.to_string()
+            };
             attributes.insert(
-                attr.name
-                    .resolve(strings)
-                    .ok_or(NodeToElementError::NoAttrName {
-                        index: attr.name.index,
-                    })?,
+                key_str,
                 attr.rawValue
                     .resolve(strings)
                     .or(attr.typedValue.data.resolve(strings))
@@ -150,6 +162,7 @@ impl ResXMLTree_attrExt {
                     })?,
             );
         }
+
         Ok(Element {
             name: self
                 .name
@@ -157,7 +170,7 @@ impl ResXMLTree_attrExt {
                 .ok_or(NodeToElementError::NoNodeName {
                     index: self.name.index,
                 })?,
-            namespace: self.ns.resolve(strings),
+            namespace: None,
             prefix: None,
             namespaces: None,
             attributes,
@@ -167,19 +180,28 @@ impl ResXMLTree_attrExt {
 
     pub fn from_element(element: &Element, string_pool: &mut StringPool) -> ResXMLTree_attrExt {
         let mut attributes: Vec<ResXMLTree_attribute> = Vec::new();
-        let ns = if let Some(nss) = &element.namespace {
-            string_pool.allocate(nss.to_string())
-        } else {
-            ResStringPool_ref::null()
-        };
 
         for (key, value) in &element.attributes {
+            let (ns, key) = key.split_once(":").unwrap_or(("", key));
+            let ns = match ns {
+                "" => ResStringPool_ref::null(),
+                n => match &element.namespaces {
+                    None => ResStringPool_ref::null(),
+                    Some(nsps) => match nsps.get(n) {
+                        None => ResStringPool_ref::null(),
+                        Some(uri) => string_pool.allocate(uri.to_string()),
+                    },
+                },
+            };
+            let data = ResValueType::unresolve(value, string_pool, key);
+            let raw_value = match data {
+                ResValueType::TYPE_STRING(str) => str,
+                _ => ResStringPool_ref::null(),
+            };
             attributes.push(ResXMLTree_attribute {
                 name: string_pool.allocate(key.to_string()),
-                rawValue: ResStringPool_ref::null(),
-                typedValue: Res_value {
-                    data: ResValueType::unresolve(value, string_pool),
-                },
+                rawValue: raw_value,
+                typedValue: Res_value { data },
                 ns,
             });
         }
@@ -190,7 +212,7 @@ impl ResXMLTree_attrExt {
                 comment: ResStringPool_ref::null(),
                 lineNumber: 0,
             },
-            ns,
+            ns: ResStringPool_ref::null(),
             classIndex: 0, // TODO: finish this
             idIndex: 0,
             styleIndex: 0,
@@ -221,6 +243,69 @@ impl RawXMLTree {
     pub fn get_header_size() -> usize {
         return 0x8;
     }
+
+    pub fn read<R: Seek + Read>(reader: &mut R) -> Result<RawXMLTree, ReadAXMLError> {
+        let header = ResChunk_header::read_le(reader).map_err(ReadAXMLError::ReadError)?;
+
+        if let ResTypeValue::XML(xml) = header.data {
+            return Ok(xml);
+        }
+        return Err(ReadAXMLError::InvalidType((&header.data).into()));
+    }
+
+    pub fn write<W: Seek + Write>(self, writer: &mut W) -> Result<(), WriteAXMLError> {
+        let header = ResChunk_header {
+            data: ResTypeValue::XML(self),
+        };
+
+        Ok(header.write_le(writer)?)
+    }
+}
+
+#[derive(Debug, Error)]
+pub enum ReadAXMLError {
+    #[error("an error occured while reading the axml {0}")]
+    ReadError(binrw::Error),
+    #[error("invalid type {0} expected xml")]
+    InvalidType(ResType),
+}
+
+#[derive(Debug)]
+pub struct WriteAXMLError(pub binrw::Error);
+
+impl From<binrw::Error> for WriteAXMLError {
+    fn from(value: binrw::Error) -> Self {
+        Self(value)
+    }
+}
+
+impl TryFrom<&Vec<u8>> for RawXMLTree {
+    type Error = ReadAXMLError;
+    fn try_from(value: &Vec<u8>) -> Result<Self, Self::Error> {
+        let mut stream = Cursor::new(value);
+
+        RawXMLTree::read(&mut stream)
+    }
+}
+
+impl TryFrom<Vec<u8>> for RawXMLTree {
+    type Error = ReadAXMLError;
+    fn try_from(value: Vec<u8>) -> Result<Self, Self::Error> {
+        let mut stream = Cursor::new(value);
+
+        RawXMLTree::read(&mut stream)
+    }
+}
+
+impl TryFrom<RawXMLTree> for Vec<u8> {
+    type Error = WriteAXMLError;
+    fn try_from(value: RawXMLTree) -> Result<Self, Self::Error> {
+        let mut stream = Cursor::new(Vec::new());
+
+        value.write(&mut stream)?;
+
+        Ok(stream.into_inner())
+    }
 }
 
 #[binrw::parser(reader, endian)]
@@ -238,17 +323,14 @@ pub fn parse_chunks(size: u32) -> BinResult<Vec<ResChunk_header>> {
 }
 #[derive(Debug)]
 pub enum TreeToElementError {
+    ReadError(binrw::Error),
+    InvalidType(Box<ResTypeValue>),
     NoElements,
     InvalidNameSpace,
     NoStringPool,
     UnbalancedElements,
     NoRootElement,
     NodeToElementError(NodeToElementError),
-}
-
-#[derive(Debug)]
-pub enum ElementToTreeError {
-    UnbalancedElements,
 }
 
 impl From<NodeToElementError> for TreeToElementError {
@@ -298,7 +380,7 @@ fn process_node(
 
     chunks.push(start_element.into());
 
-    for child in &element.children {
+    for child in element.children.iter() {
         if let xmltree::XMLNode::Element(ref child_element) = child {
             process_node(child_element, chunks, str_pool, element.namespaces.as_ref());
         }
@@ -320,17 +402,21 @@ fn process_node(
     }
 }
 
-impl TryFrom<Element> for RawXMLTree {
-    type Error = ElementToTreeError;
-    fn try_from(value: Element) -> Result<Self, Self::Error> {
+impl From<Element> for RawXMLTree {
+    fn from(value: Element) -> Self {
         let mut str_pool = StringPool::default();
         let mut chunks: Vec<ResChunk_header> = Vec::new();
+
+        let map = Vec::new();
+        // TODO: resource map
+
+        chunks.push(ResTypeValue::RESOURCE_MAP(ResourceMap { mapping: map }).into());
 
         process_node(&value, &mut chunks, &mut str_pool, None);
 
         chunks.insert(0, ResTypeValue::STRING_POOL(str_pool).into());
 
-        Ok(Self { chunks })
+        Self { chunks }
     }
 }
 
@@ -366,6 +452,8 @@ impl TryFrom<RawXMLTree> for xmltree::Element {
                 ResTypeValue::START_ELEMENT(node) => {
                     // Convert the start element node to an xmltree::Element
                     let mut el = node.to_element(&strings)?;
+                    let namespace = namespaces.get("android").map(|v| v.to_string());
+                    el.namespace = namespace;
                     el.namespaces = Some(namespaces.clone());
                     stack.push(el);
                 }

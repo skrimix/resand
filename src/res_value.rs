@@ -295,7 +295,13 @@ impl From<ParseIntError> for InvalidResType {
 }
 
 impl ResValueType {
-    pub fn unresolve(string: &str, pool: &mut StringPool) -> Self {
+    pub fn unresolve(string: &str, pool: &mut StringPool, key: &str) -> Self {
+        let non_int_keys = [
+            "versionName",
+            "compileSdkVersionCodename",
+            "platformBuildVersionName",
+        ];
+        let non_float = ["compileSdkVersionCodename", "versionName"];
         if let Ok(reference) = string.parse() {
             return ResValueType::TYPE_REFERENCE(reference);
         }
@@ -304,14 +310,23 @@ impl ResValueType {
         }
 
         if let Ok(int) = string.parse() {
-            return ResValueType::TYPE_INT_DEC(int);
+            if !non_int_keys.contains(&key) {
+                return ResValueType::TYPE_INT_DEC(int);
+            }
         }
 
-        if let Ok(int) = u32::from_str_radix(string.trim_start_matches("0x"), 16) {
-            return ResValueType::TYPE_INT_HEX(int);
+        if string.chars().take(2).collect::<String>() == "0x" {
+            let str: String = string.chars().skip(2).collect();
+            if let Ok(int) = u32::from_str_radix(&str, 16) {
+                if !non_int_keys.contains(&key) {
+                    return ResValueType::TYPE_INT_HEX(int);
+                }
+            }
         }
         if let Ok(float) = string.parse() {
-            return ResValueType::TYPE_FLOAT(float);
+            if !non_float.contains(&key) {
+                return ResValueType::TYPE_FLOAT(float);
+            }
         }
 
         ResValueType::TYPE_STRING(pool.allocate(string.to_string()))

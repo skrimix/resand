@@ -107,7 +107,8 @@ pub struct StringPool {
 
     /// Index from header of the style data.
     #[br(temp)]
-    #[bw(try_calc = Ok::<u32, binrw::Error>(calc_styles_start(header_offset, s.stream_position()?, stringsStart, strings)))]
+    #[br(dbg)]
+    #[bw(try_calc = Ok::<u32, binrw::Error>(calc_styles_start(header_offset, s.stream_position()?, stringsStart, strings, styleCount == 0)))]
     stylesStart: u32,
 
     #[br(count=stringCount)]
@@ -126,6 +127,7 @@ pub struct StringPool {
     pub strings: StringPoolStrings,
 
     #[br(parse_with = parse_from_iter(style_indices.iter().copied()), restore_position, seek_before(SeekFrom::Start(header_offset + (stylesStart as u64))))]
+    #[bw(align_after = 4)]
     pub styles: Vec<ResStringPool_span>,
 }
 
@@ -194,7 +196,11 @@ pub fn calc_styles_start(
     current_pos: u64,
     strings_start: u32,
     strings: &StringPoolStrings,
+    no_styles: bool,
 ) -> u32 {
+    if no_styles {
+        return 0;
+    }
     let abs_pos = (strings_start as u64) + (strings.total_bytes() as u64) + current_pos;
 
     let aligned_pos = align(abs_pos, 4); // TODO: check if necessary
@@ -256,6 +262,9 @@ impl StringPool {
     }
 
     pub fn allocate(&mut self, string: String) -> ResStringPool_ref {
+        if string.chars().next() == Some('@') {
+            panic!("how");
+        }
         let val = self.get_strings().iter().position(|s| s == &string);
         if let Some(v) = val {
             return ResStringPool_ref { index: v as u32 };
