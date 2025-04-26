@@ -1,5 +1,5 @@
 /*
-    Copyright (C) 2024 fieryhenry
+    Copyright (C) 2025 fieryhenry
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -15,12 +15,12 @@
     along with this program.  If not, see <https://www.gnu.org/licenses/>.
 */
 
-#![allow(non_snake_case)]
-#![allow(non_camel_case_types)]
-
 pub mod defs;
 pub mod res_value;
+#[allow(clippy::unit_arg)]
 pub mod string_pool;
+#[allow(clippy::int_plus_one)]
+pub mod table;
 pub mod xmltree;
 
 pub fn align(pos: u64, alignment: u64) -> u64 {

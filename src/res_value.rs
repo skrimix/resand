@@ -1,5 +1,5 @@
 /*
-    Copyright (C) 2024 fieryhenry
+    Copyright (C) 2025 fieryhenry
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -20,13 +20,13 @@ use std::{fmt::Display, num::ParseIntError, str::FromStr};
 use binrw::{binrw, BinRead, BinWrite};
 
 use crate::{
-    defs::ResTable_ref,
-    string_pool::{ResStringPool_ref, StringPool},
+    defs::ResTableRef,
+    string_pool::{ResStringPoolRef, StringPool},
 };
 
 #[binrw]
 #[derive(Debug, PartialEq, Clone, Copy)]
-pub struct Res_value {
+pub struct ResValue {
     /// Number of bytes in this structure.
     #[br(temp)]
     #[bw(calc = 8)]
@@ -43,36 +43,42 @@ pub struct Res_value {
     pub data: ResValueType,
 }
 
-impl Res_value {
+impl ResValue {
     pub fn new(data: ResValueType) -> Self {
         Self { data }
+    }
+
+    pub fn write_string(&mut self, string: String, string_pool: &mut StringPool) {
+        let reference = string_pool.allocate(string);
+
+        self.data = ResValueType::String(reference);
     }
 }
 
 #[derive(Debug, BinRead, BinWrite, PartialEq, Copy, Clone)]
 pub enum ResTypeNullType {
     #[brw(magic(0u32))]
-    DATA_NULL_UNDEFINED,
+    Undefined,
     #[brw(magic(1u32))]
-    DATA_NULL_EMPTY,
+    Empty,
 }
 
 #[derive(Debug, BinRead, BinWrite, PartialEq, Copy, Clone)]
 pub enum ResTypeBoolType {
     #[brw(magic(0u32))]
-    FALSE,
+    False,
     #[brw(magic(1u32))]
-    TRUE,
+    True,
     #[brw(magic(0xffffffffu32))]
-    NULL,
+    Null,
 }
 
 impl Display for ResTypeBoolType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let str = match self {
-            ResTypeBoolType::NULL => "null",
-            ResTypeBoolType::TRUE => "true",
-            ResTypeBoolType::FALSE => "false",
+            ResTypeBoolType::Null => "null",
+            ResTypeBoolType::True => "true",
+            ResTypeBoolType::False => "false",
         };
         write!(f, "{}", str)
     }
@@ -87,9 +93,9 @@ impl FromStr for ResTypeBoolType {
     type Err = InvalidBool;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         Ok(match s {
-            "null" => Self::NULL,
-            "true" => Self::TRUE,
-            "false" => Self::FALSE,
+            "null" => Self::Null,
+            "true" => Self::True,
+            "false" => Self::False,
             _ => Err(InvalidBool {
                 input: s.to_string(),
             })?,
@@ -195,8 +201,8 @@ impl RGB4 {
 impl From<bool> for ResTypeBoolType {
     fn from(value: bool) -> Self {
         match value {
-            true => ResTypeBoolType::TRUE,
-            false => ResTypeBoolType::FALSE,
+            true => ResTypeBoolType::True,
+            false => ResTypeBoolType::False,
         }
     }
 }
@@ -204,9 +210,9 @@ impl From<bool> for ResTypeBoolType {
 impl From<ResTypeBoolType> for bool {
     fn from(value: ResTypeBoolType) -> Self {
         match value {
-            ResTypeBoolType::TRUE => true,
-            ResTypeBoolType::FALSE => false,
-            ResTypeBoolType::NULL => false,
+            ResTypeBoolType::True => true,
+            ResTypeBoolType::False => false,
+            ResTypeBoolType::Null => false,
         }
     }
 }
@@ -216,71 +222,54 @@ pub enum ResValueType {
     /// The 'data' is either 0 or 1, specifying this resource is either undefined or empty,
     /// respectively.
     #[brw(magic(0x00u8))]
-    TYPE_NULL(ResTypeNullType),
+    Null(ResTypeNullType),
     /// The 'data' holds a ResTable_ref, a reference to another resource table entry.
     #[brw(magic(0x01u8))]
-    TYPE_REFERENCE(ResTable_ref),
+    Reference(ResTableRef),
     /// The 'data' holds an attribute resource identifier.
     #[brw(magic(0x02u8))]
-    TYPE_ATTRIBUTE(u32),
+    Attribute(u32),
     /// The 'data' holds a ResStringPool_ref, a reference into the containing resource table's global value string pool.
     #[brw(magic(0x03u8))]
-    TYPE_STRING(ResStringPool_ref),
+    String(ResStringPoolRef),
     /// The 'data' holds a single-precision floating point number.
     #[brw(magic(0x04u8))]
-    TYPE_FLOAT(f32),
+    Float(f32),
     /// The 'data' holds a complex number encoding a dimension value, such as "100in".
     #[brw(magic(0x05u8))]
-    TYPE_DIMENSION(u32),
+    Dimension(u32),
     /// The 'data' holds a complex number encoding a fraction of a container.
     #[brw(magic(0x06u8))]
-    TYPE_FRACTION(u32),
+    Fraction(u32),
     /// The 'data' holds a dynamic ResTable_ref which needs to be resolved before it can be used
     /// like a TYPE_REFERENCE.
     #[brw(magic(0x07u8))]
-    TYPE_DYNAMIC_REFERENCE(ResTable_ref),
+    DyanmicReference(ResTableRef),
     /// The 'data' holds an attribute resource identifier, which needs to be resolved before it can
     /// be used like a TYPE_ATTRIBUTE.
     #[brw(magic(0x08u8))]
-    TYPE_DYNAMIC_ATTRIBUTE(u32),
+    DynamicAttribute(u32),
     /// The 'data' is a raw integer value of the form n..n.
     #[brw(magic(0x010u8))]
-    TYPE_INT_DEC(u32),
+    IntDec(u32),
     /// The 'data' is a raw integer value of the form 0xn..n.
     #[brw(magic(0x11u8))]
-    TYPE_INT_HEX(u32),
+    IntHex(u32),
     /// The 'data' is either 0 or 1, for input "false" or "true" respectively.
     #[brw(magic(0x12u8))]
-    TYPE_INT_BOOLEAN(ResTypeBoolType),
+    IntBoolean(ResTypeBoolType),
     /// The 'data' is a raw integer value of the form #aarrggbb.
     #[brw(magic(0x1cu8))]
-    TYPE_INT_COLOR_ARGB8(ARGB8),
+    IntColorARGB8(ARGB8),
     /// The 'data' is a raw integer value of the form #rrggbb.
     #[brw(magic(0x1du8))]
-    TYPE_INT_COLOR_RGB8(RGB8),
+    IntColorRGB8(RGB8),
     /// The 'data' is a raw integer value of the form #argb.
     #[brw(magic(0x1eu8))]
-    TYPE_INT_COLOR_ARGB4(ARGB4),
+    IntColorARGB4(ARGB4),
     /// The 'data' is a raw integer value of the form #rgb.
     #[brw(magic(0x1fu8))]
-    TYPE_INT_COLOR_RGB4(RGB4),
-}
-
-impl ResValueType {
-    pub fn resolve(&self, strings: &[String]) -> Option<String> {
-        match self {
-            ResValueType::TYPE_STRING(v) => v.resolve(strings),
-            ResValueType::TYPE_INT_DEC(v) => Some(v.to_string()),
-            ResValueType::TYPE_INT_HEX(v) => Some(format!("{:#x}", v)),
-            ResValueType::TYPE_INT_BOOLEAN(v) => Some(v.to_string()),
-            ResValueType::TYPE_REFERENCE(v) => Some(v.to_string()),
-            ResValueType::TYPE_FLOAT(v) => Some(v.to_string()),
-            _ => {
-                dbg!(self);
-                todo!()
-            }
-        }
-    }
+    IntColorRGB4(RGB4),
 }
 
 #[derive(Debug)]
@@ -303,15 +292,15 @@ impl ResValueType {
         ];
         let non_float = ["compileSdkVersionCodename", "versionName"];
         if let Ok(reference) = string.parse() {
-            return ResValueType::TYPE_REFERENCE(reference);
+            return ResValueType::Reference(reference);
         }
         if let Ok(bool) = string.parse() {
-            return ResValueType::TYPE_INT_BOOLEAN(bool);
+            return ResValueType::IntBoolean(bool);
         }
 
         if let Ok(int) = string.parse() {
             if !non_int_keys.contains(&key) {
-                return ResValueType::TYPE_INT_DEC(int);
+                return ResValueType::IntDec(int);
             }
         }
 
@@ -319,16 +308,16 @@ impl ResValueType {
             let str: String = string.chars().skip(2).collect();
             if let Ok(int) = u32::from_str_radix(&str, 16) {
                 if !non_int_keys.contains(&key) {
-                    return ResValueType::TYPE_INT_HEX(int);
+                    return ResValueType::IntHex(int);
                 }
             }
         }
         if let Ok(float) = string.parse() {
             if !non_float.contains(&key) {
-                return ResValueType::TYPE_FLOAT(float);
+                return ResValueType::Float(float);
             }
         }
 
-        ResValueType::TYPE_STRING(pool.allocate(string.to_string()))
+        ResValueType::String(pool.allocate(string.to_string()))
     }
 }

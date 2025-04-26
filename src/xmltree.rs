@@ -1,55 +1,64 @@
-use std::{
-    collections::HashMap,
-    io::{Cursor, Read, Seek, Write},
-};
+/*
+    Copyright (C) 2025 fieryhenry
 
-use binrw::{binrw, BinRead, BinResult, BinWrite};
+    This program is free software: you can redistribute it and/or modify
+    it under the terms of the GNU General Public License as published by
+    the Free Software Foundation, either version 3 of the License, or
+    (at your option) any later version.
+
+    This program is distributed in the hope that it will be useful,
+    but WITHOUT ANY WARRANTY; without even the implied warranty of
+    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+    GNU General Public License for more details.
+
+    You should have received a copy of the GNU General Public License
+    along with this program.  If not, see <https://www.gnu.org/licenses/>.
+*/
+
+use std::io::{Cursor, Read, Seek, Write};
+
+use binrw::{binrw, BinRead, BinWrite};
 use thiserror::Error;
-use xmltree::{Element, Namespace};
 
 use crate::{
-    defs::{ResChunk_header, ResType, ResTypeValue, ResourceMap},
-    res_value::{ResValueType, Res_value},
-    string_pool::{ResStringPool_ref, StringPool},
+    defs::{parse_chunks, ResChunk, ResType, ResTypeValue, ResourceMap},
+    res_value::{ResValue, ResValueType},
+    string_pool::{ResStringPoolRef, StringPool},
 };
-
-pub struct ResXMLTree {
-    pub nodes: Vec<ResXMLTree_node>,
-}
 
 /// Basic XML tree node. A single item in the XML document. Extended info about the node can be
 /// found after header.headerSize.
 #[derive(Debug, PartialEq, BinRead, BinWrite, Clone, Copy)]
-pub struct ResXMLTree_node {
+pub struct ResXMLTreeNode {
     /// Line number in original source file at which this element appeared.
-    pub lineNumber: u32,
+    pub line_number: u32,
     /// Optional XML comment that was associated with the element; -1 if none.
-    pub comment: ResStringPool_ref,
+    pub comment: ResStringPoolRef,
 }
 
 /// Extended XML tree node for CDATA tags -- includes the CDATA string. Appears header.headerSize
 /// bytes after a ResXMLTree_node
 #[derive(Debug, PartialEq, BinRead, BinWrite, Clone, Copy)]
-pub struct ResXMLTree_cdataExt {
-    pub node: ResXMLTree_node,
+pub struct ResXMLTreeCDataExt {
+    pub node: ResXMLTreeNode,
     /// The raw CDATA character data.
-    pub data: ResStringPool_ref,
+    pub data: ResStringPoolRef,
     /// The typed value of the character data if this is a CDATA node.
-    pub typedData: Res_value,
+    pub typed_data: ResValue,
 }
 
 /// Extended XML tree node for namespace start / end nodes. Appears header.headerSize bytes after a
 /// ResXMLTree_node.
 #[derive(Debug, PartialEq, BinRead, BinWrite, Copy, Clone)]
-pub struct ResXMLTree_namespaceExt {
-    pub node: ResXMLTree_node,
+pub struct ResXMLTreeNameSpaceExt {
+    pub node: ResXMLTreeNode,
     /// The prefix of the namespace.
-    pub prefix: ResStringPool_ref,
+    pub prefix: ResStringPoolRef,
     /// The URI of the namespace.
-    pub uri: ResStringPool_ref,
+    pub uri: ResStringPoolRef,
 }
 
-impl ResXMLTree_namespaceExt {
+impl ResXMLTreeNameSpaceExt {
     pub fn get_header_size() -> usize {
         0x10
     }
@@ -58,15 +67,15 @@ impl ResXMLTree_namespaceExt {
 /// Extended XML tree node for element start / end nodes. Appears header.headerSize bytes after a
 /// ResXMLTree_node.
 #[derive(Debug, PartialEq, BinRead, BinWrite, Copy, Clone)]
-pub struct ResXMLTree_endElementExt {
-    pub node: ResXMLTree_node,
+pub struct ResXMLTreeEndElementExt {
+    pub node: ResXMLTreeNode,
     /// String of the full namespace of this element.
-    pub ns: ResStringPool_ref,
+    pub ns: ResStringPoolRef,
     /// String name of this node if it is an ELEMENT; the raw character data if this is a CDATA
     /// node.
-    pub name: ResStringPool_ref,
+    pub name: ResStringPoolRef,
 }
-impl ResXMLTree_endElementExt {
+impl ResXMLTreeEndElementExt {
     pub fn get_header_size() -> usize {
         0x10
     }
@@ -76,8 +85,8 @@ impl ResXMLTree_endElementExt {
 #[binrw]
 #[brw(stream = s)]
 #[derive(Debug, PartialEq, Clone)]
-pub struct ResXMLTree_attrExt {
-    pub node: ResXMLTree_node,
+pub struct ResXMLTreeAttrExt {
+    pub node: ResXMLTreeNode,
 
     #[br(temp)]
     #[brw(try_calc=s.stream_position())]
@@ -85,42 +94,42 @@ pub struct ResXMLTree_attrExt {
     start_offset: u64,
 
     /// String of the full namespace of this element.
-    pub ns: ResStringPool_ref,
+    pub ns: ResStringPoolRef,
 
     /// String name of this node if it is an ELEMENT; the raw character data if this is a CDATA
     /// node.
-    pub name: ResStringPool_ref,
+    pub name: ResStringPoolRef,
 
     /// Byte offset from the start of this structure where the attributes start.
     #[br(temp)]
     #[bw(calc=4 + 4 + 2 + 2 + 2 + 2 + 2 + 2)]
-    attributeStart: u16,
+    attribute_start: u16,
 
     /// Size of the ResXMLTree_attribute structures that follow.
     #[bw(calc = 20)]
     #[br(temp)]
-    #[br(assert(attributeSize==20))]
-    attributeSize: u16,
+    #[br(assert(attribute_size==20))]
+    attribute_size: u16,
 
     /// Number of attributes associated with an ELEMENT. These are availiable as an array of
     /// ResXMLTree_attribute structures immediately following this node.
     #[br(temp)]
     #[bw(calc=attributes.len() as u16)]
-    attributeCount: u16,
+    attribute_count: u16,
 
     /// Index (1-based) of the "id" attribute. 0 if none.
-    pub idIndex: u16,
+    pub id_index: u16,
     /// Index (1-based) of the "class" attribute. 0 if none.
-    pub classIndex: u16,
+    pub class_index: u16,
     /// Index (1-based) of the "style" attribute. 0 if none.
-    pub styleIndex: u16,
+    pub style_index: u16,
 
-    #[br(count=attributeCount)]
-    #[brw(seek_before=std::io::SeekFrom::Start(start_offset + (attributeStart as u64)))]
-    pub attributes: Vec<ResXMLTree_attribute>,
+    #[br(count=attribute_count)]
+    #[brw(seek_before=std::io::SeekFrom::Start(start_offset + (attribute_start as u64)))]
+    pub attributes: Vec<ResXMLTreeAttribute>,
 }
 
-impl ResXMLTree_attrExt {
+impl ResXMLTreeAttrExt {
     pub fn get_header_size() -> usize {
         0x10
     }
@@ -133,128 +142,61 @@ pub enum NodeToElementError {
     NoNodeName { index: u32 },
 }
 
-impl ResXMLTree_attrExt {
-    pub fn to_element(
-        self: &ResXMLTree_attrExt,
-        strings: &[String],
-    ) -> Result<Element, NodeToElementError> {
-        let mut attributes: HashMap<String, String> = HashMap::new();
-        for attr in &self.attributes {
-            let key = attr
-                .name
-                .resolve(strings)
-                .ok_or(NodeToElementError::NoAttrName {
-                    index: attr.name.index,
-                })?;
-
-            let key_str = if let Some(n) = attr.ns.resolve(strings) {
-                format!("{}:{}", n.split("/").last().unwrap_or(&n), key)
-            } else {
-                key.to_string()
-            };
-            attributes.insert(
-                key_str,
-                attr.rawValue
-                    .resolve(strings)
-                    .or(attr.typedValue.data.resolve(strings))
-                    .ok_or(NodeToElementError::NoAttrValue {
-                        index: attr.rawValue.index,
-                    })?,
-            );
-        }
-
-        Ok(Element {
-            name: self
-                .name
-                .resolve(strings)
-                .ok_or(NodeToElementError::NoNodeName {
-                    index: self.name.index,
-                })?,
-            namespace: None,
-            prefix: None,
-            namespaces: None,
-            attributes,
-            children: Vec::new(),
-        })
-    }
-
-    pub fn from_element(element: &Element, string_pool: &mut StringPool) -> ResXMLTree_attrExt {
-        let mut attributes: Vec<ResXMLTree_attribute> = Vec::new();
-
-        for (key, value) in &element.attributes {
-            let (ns, key) = key.split_once(":").unwrap_or(("", key));
-            let ns = match ns {
-                "" => ResStringPool_ref::null(),
-                n => match &element.namespaces {
-                    None => ResStringPool_ref::null(),
-                    Some(nsps) => match nsps.get(n) {
-                        None => ResStringPool_ref::null(),
-                        Some(uri) => string_pool.allocate(uri.to_string()),
-                    },
-                },
-            };
-            let data = ResValueType::unresolve(value, string_pool, key);
-            let raw_value = match data {
-                ResValueType::TYPE_STRING(str) => str,
-                _ => ResStringPool_ref::null(),
-            };
-            attributes.push(ResXMLTree_attribute {
-                name: string_pool.allocate(key.to_string()),
-                rawValue: raw_value,
-                typedValue: Res_value { data },
-                ns,
-            });
-        }
-        Self {
-            attributes,
-            name: string_pool.allocate(element.name.to_string()),
-            node: ResXMLTree_node {
-                comment: ResStringPool_ref::null(),
-                lineNumber: 0,
-            },
-            ns: ResStringPool_ref::null(),
-            classIndex: 0, // TODO: finish this
-            idIndex: 0,
-            styleIndex: 0,
-        }
-    }
+#[derive(Debug, PartialEq, BinRead, BinWrite, Copy, Clone)]
+pub struct ResXMLTreeAttribute {
+    /// Namespace of this attribute.
+    pub ns: ResStringPoolRef,
+    /// Name of this attribute.
+    pub name: ResStringPoolRef,
+    /// The original raw string value of this attribute.
+    pub raw_value: ResStringPoolRef,
+    /// Processed typed value of this attribute.
+    pub typed_value: ResValue,
 }
 
-#[derive(Debug, PartialEq, BinRead, BinWrite, Copy, Clone)]
-pub struct ResXMLTree_attribute {
-    /// Namespace of this attribute.
-    pub ns: ResStringPool_ref,
-    /// Name of this attribute.
-    pub name: ResStringPool_ref,
-    /// The original raw string value of this attribute.
-    pub rawValue: ResStringPool_ref,
-    /// Processed typed value of this attribute.
-    pub typedValue: Res_value,
+impl ResXMLTreeAttribute {
+    pub fn write_string(&mut self, string: String, strings: &mut StringPool) {
+        let string_pool_ref = strings.allocate(string);
+        self.set_value(ResValue::new(ResValueType::String(string_pool_ref)));
+    }
+
+    pub fn write_bool(&mut self, value: bool) {
+        self.set_value(ResValue::new(ResValueType::IntBoolean(value.into())));
+    }
+
+    pub fn set_value(&mut self, value: ResValue) {
+        self.typed_value = value;
+
+        match value.data {
+            ResValueType::String(string_ref) => self.raw_value = string_ref,
+            _ => self.raw_value = ResStringPoolRef::null(),
+        };
+    }
 }
 
 #[derive(Debug, BinRead, BinWrite, PartialEq, Clone)]
 #[br(import(size: u32))]
 pub struct RawXMLTree {
     #[br(parse_with=parse_chunks, args(size))]
-    pub chunks: Vec<ResChunk_header>,
+    pub chunks: Vec<ResChunk>,
 }
 
 impl RawXMLTree {
     pub fn get_header_size() -> usize {
-        return 0x8;
+        0x8
     }
 
     pub fn read<R: Seek + Read>(reader: &mut R) -> Result<RawXMLTree, ReadAXMLError> {
-        let header = ResChunk_header::read_le(reader).map_err(ReadAXMLError::ReadError)?;
+        let header = ResChunk::read_le(reader).map_err(ReadAXMLError::ReadError)?;
 
         if let ResTypeValue::XML(xml) = header.data {
             return Ok(xml);
         }
-        return Err(ReadAXMLError::InvalidType((&header.data).into()));
+        Err(ReadAXMLError::InvalidType((&header.data).into()))
     }
 
     pub fn write<W: Seek + Write>(self, writer: &mut W) -> Result<(), WriteAXMLError> {
-        let header = ResChunk_header {
+        let header = ResChunk {
             data: ResTypeValue::XML(self),
         };
 
@@ -270,30 +212,13 @@ pub enum ReadAXMLError {
     InvalidType(ResType),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Error)]
+#[error("{0}")]
 pub struct WriteAXMLError(pub binrw::Error);
 
 impl From<binrw::Error> for WriteAXMLError {
     fn from(value: binrw::Error) -> Self {
         Self(value)
-    }
-}
-
-impl TryFrom<&Vec<u8>> for RawXMLTree {
-    type Error = ReadAXMLError;
-    fn try_from(value: &Vec<u8>) -> Result<Self, Self::Error> {
-        let mut stream = Cursor::new(value);
-
-        RawXMLTree::read(&mut stream)
-    }
-}
-
-impl TryFrom<Vec<u8>> for RawXMLTree {
-    type Error = ReadAXMLError;
-    fn try_from(value: Vec<u8>) -> Result<Self, Self::Error> {
-        let mut stream = Cursor::new(value);
-
-        RawXMLTree::read(&mut stream)
     }
 }
 
@@ -308,19 +233,6 @@ impl TryFrom<RawXMLTree> for Vec<u8> {
     }
 }
 
-#[binrw::parser(reader, endian)]
-pub fn parse_chunks(size: u32) -> BinResult<Vec<ResChunk_header>> {
-    let start_pos = ResChunk_header::get_header_offset(reader.stream_position()?);
-
-    let mut chunks: Vec<ResChunk_header> = Vec::new();
-
-    while reader.stream_position()? - start_pos < (size as u64) {
-        let chunk: ResChunk_header = ResChunk_header::read_options(reader, endian, ())?;
-        chunks.push(chunk);
-    }
-
-    Ok(chunks)
-}
 #[derive(Debug)]
 pub enum TreeToElementError {
     ReadError(binrw::Error),
@@ -339,169 +251,354 @@ impl From<NodeToElementError> for TreeToElementError {
     }
 }
 
-fn process_node(
-    element: &Element,
-    chunks: &mut Vec<ResChunk_header>,
-    str_pool: &mut StringPool,
-    parent_namespace: Option<&Namespace>,
-) {
-    let el = ResXMLTree_attrExt::from_element(element, str_pool);
-    let node = el.node;
-    let ns = el.ns;
-    let name = el.name;
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct XMLNameSpace {
+    pub prefix: ResStringPoolRef,
+    pub uri: ResStringPoolRef,
+}
 
-    let mut new_namespaces: Namespace = Namespace::empty();
+#[derive(Debug, Clone)]
+pub struct XMLTreeNode {
+    pub element: ResXMLTreeAttrExt,
+    pub children: Vec<XMLTreeNode>,
+    pub namespace: Option<XMLNameSpace>,
+}
 
-    if element.namespaces.as_ref() != parent_namespace {
-        if let Some(el_ns) = &element.namespaces {
-            for namespace in el_ns {
-                if let Some(p_ns) = parent_namespace {
-                    if !p_ns.contains(namespace.0) {
-                        new_namespaces.put(namespace.0, namespace.1);
-                    }
-                } else {
-                    new_namespaces.put(namespace.0, namespace.1);
-                }
-            }
-        }
+#[derive(Debug, Clone)]
+pub struct XMLTree {
+    pub string_pool: StringPool,
+    pub resource_map: Option<ResourceMap>,
+    pub root: XMLTreeNode,
+}
 
-        for new_ns in &new_namespaces {
-            chunks.push(
-                ResTypeValue::START_NAMESPACE(ResXMLTree_namespaceExt {
-                    node,
-                    prefix: str_pool.allocate(new_ns.0.to_string()),
-                    uri: str_pool.allocate(new_ns.1.to_string()),
-                })
-                .into(),
-            );
-        }
-    }
-    let start_element = ResTypeValue::START_ELEMENT(el);
+#[derive(Debug, Error)]
+pub enum ReadXMLTreeError {
+    #[error("{0}")]
+    ReadData(ReadAXMLError),
+    #[error("{0}")]
+    ConvertRaw(XMLTreeParseError),
+}
 
-    chunks.push(start_element.into());
+impl XMLTree {
+    pub fn read<R: Read + Seek>(reader: &mut R) -> Result<XMLTree, ReadXMLTreeError> {
+        let raw_xml: RawXMLTree = RawXMLTree::read(reader).map_err(ReadXMLTreeError::ReadData)?;
 
-    for child in element.children.iter() {
-        if let xmltree::XMLNode::Element(ref child_element) = child {
-            process_node(child_element, chunks, str_pool, element.namespaces.as_ref());
-        }
+        raw_xml.try_into().map_err(ReadXMLTreeError::ConvertRaw)
     }
 
-    let end_element = ResTypeValue::END_ELEMENT(ResXMLTree_endElementExt { node, ns, name });
+    pub fn write<W: Write + Seek>(self, writer: &mut W) -> Result<(), WriteAXMLError> {
+        let raw_xml: RawXMLTree = self.into();
 
-    chunks.push(end_element.into());
+        raw_xml.write(writer)?;
 
-    for new_ns in &new_namespaces {
-        chunks.push(
-            ResTypeValue::END_NAMESPACE(ResXMLTree_namespaceExt {
-                node,
-                prefix: str_pool.allocate(new_ns.0.to_string()),
-                uri: str_pool.allocate(new_ns.1.to_string()),
-            })
-            .into(),
-        );
+        Ok(())
     }
 }
 
-impl From<Element> for RawXMLTree {
-    fn from(value: Element) -> Self {
-        let mut str_pool = StringPool::default();
-        let mut chunks: Vec<ResChunk_header> = Vec::new();
+impl TryFrom<&[u8]> for XMLTree {
+    type Error = ReadXMLTreeError;
+    fn try_from(value: &[u8]) -> Result<Self, Self::Error> {
+        let mut reader = Cursor::new(value);
 
-        let map = Vec::new();
-        // TODO: resource map
+        XMLTree::read(&mut reader)
+    }
+}
 
-        chunks.push(ResTypeValue::RESOURCE_MAP(ResourceMap { mapping: map }).into());
+impl TryFrom<XMLTree> for Vec<u8> {
+    type Error = WriteAXMLError;
+    fn try_from(value: XMLTree) -> Result<Self, Self::Error> {
+        let mut writer = Cursor::new(Vec::new());
 
-        process_node(&value, &mut chunks, &mut str_pool, None);
+        value.write(&mut writer)?;
 
-        chunks.insert(0, ResTypeValue::STRING_POOL(str_pool).into());
+        Ok(writer.into_inner())
+    }
+}
+
+#[derive(Debug, Error)]
+pub enum XMLTreeParseError {
+    #[error("failed to find string pool in xml tree")]
+    NoStringPool,
+    #[error("no root element found")]
+    NoRoot,
+    #[error("too many EndNamespace chunks")]
+    TooManyEndNamespaces,
+    #[error("too few EndNamespace chunks")]
+    TooFewEndNamespaces,
+    #[error("too many EndElement chunks")]
+    TooManyEndElements,
+    #[error("too few EndElement chunks")]
+    TooFewEndElements,
+    #[error("unrecognised chunk type: {0}")]
+    UnrecognisedChunk(ResType),
+    #[error("multiple root nodes found")]
+    MultipleRootNodes,
+}
+
+impl XMLTreeNode {
+    pub fn write_chunks(self, chunks: &mut Vec<ResChunk>) {
+        let node = self.element.node;
+        let ns = self.element.ns;
+        let name = self.element.name;
+
+        let parent_ns = self.namespace;
+
+        chunks.push(ResChunk {
+            data: ResTypeValue::StartElement(self.element),
+        });
+
+        for child in self.children {
+            match child.namespace {
+                None => match parent_ns {
+                    None => (),
+                    Some(parent_ns) => chunks.push(ResChunk {
+                        data: ResTypeValue::EndNameSpace(ResXMLTreeNameSpaceExt {
+                            node,
+                            prefix: parent_ns.prefix,
+                            uri: parent_ns.uri,
+                        }),
+                    }),
+                },
+                Some(child_ns) => {
+                    if parent_ns.is_none_or(|pns| pns != child_ns) {
+                        chunks.push(ResChunk {
+                            data: ResTypeValue::StartNameSpace(ResXMLTreeNameSpaceExt {
+                                node: child.element.node,
+                                prefix: child_ns.prefix,
+                                uri: child_ns.uri,
+                            }),
+                        })
+                    }
+                }
+            }
+            child.write_chunks(chunks);
+        }
+
+        chunks.push(ResChunk {
+            data: ResTypeValue::EndElement(ResXMLTreeEndElementExt { node, ns, name }),
+        });
+    }
+}
+
+impl From<XMLTree> for RawXMLTree {
+    fn from(value: XMLTree) -> Self {
+        let mut chunks: Vec<ResChunk> = Vec::new();
+
+        chunks.push(value.string_pool.into());
+
+        if let Some(rn) = value.resource_map {
+            chunks.push(rn.into())
+        }
+
+        let ns_ext = if let Some(ns) = value.root.namespace {
+            Some(ResXMLTreeNameSpaceExt {
+                node: value.root.element.node,
+                prefix: ns.prefix,
+                uri: ns.uri,
+            })
+        } else {
+            None
+        };
+        if let Some(ns) = ns_ext {
+            chunks.push(ResChunk {
+                data: ResTypeValue::StartNameSpace(ns),
+            });
+        }
+
+        value.root.write_chunks(&mut chunks);
+
+        if let Some(ns) = ns_ext {
+            chunks.push(ResChunk {
+                data: ResTypeValue::EndNameSpace(ns),
+            });
+        }
 
         Self { chunks }
     }
 }
 
-impl TryFrom<RawXMLTree> for xmltree::Element {
-    type Error = TreeToElementError;
+impl XMLTreeNode {
+    pub fn find_element<'a>(&'a self, name: &str, strings: &StringPool) -> Option<&'a XMLTreeNode> {
+        if self.element.name.resolve(strings) == Some(name) {
+            return Some(self);
+        }
+        for child in &self.children {
+            if let Some(el) = child.find_element(name, strings) {
+                return Some(el);
+            }
+        }
+        None
+    }
 
-    fn try_from(value: RawXMLTree) -> Result<Self, Self::Error> {
-        let first_chunk = value.chunks.first().ok_or(TreeToElementError::NoElements)?;
+    pub fn get_child<'a>(&'a self, name: &str, strings: &StringPool) -> Option<&'a XMLTreeNode> {
+        self.children
+            .iter()
+            .find(|c| c.element.name.resolve(strings) == Some(name))
+    }
 
-        let str_pool = if let ResTypeValue::STRING_POOL(sp) = &first_chunk.data {
-            sp
-        } else {
-            return Err(TreeToElementError::NoStringPool);
-        };
+    pub fn get_elements_mut<'a>(
+        &'a mut self,
+        path: &[&str],
+        strings: &StringPool,
+    ) -> Vec<&'a mut XMLTreeNode> {
+        let mut elements: Vec<&mut XMLTreeNode> = Vec::new();
 
-        let second_chunk = value.chunks.get(1).ok_or(TreeToElementError::NoElements)?;
-        let (resource_map, skip) = if let ResTypeValue::RESOURCE_MAP(mp) = &second_chunk.data {
-            (Some(mp), 2)
-        } else {
-            (None, 1)
-        };
+        let mut stack: Vec<(usize, &mut XMLTreeNode)> = Vec::new();
 
-        // Find the string pool in the chunks
-        let strings = str_pool.get_strings();
+        stack.push((0, self));
 
-        let mut stack: Vec<xmltree::Element> = Vec::new();
+        while let Some((index, element)) = stack.pop() {
+            let item = path.get(index);
 
-        let mut namespaces: Namespace = Namespace::empty();
+            if item.is_none() {
+                continue;
+            }
 
-        // skip first string pool and possible resource map
-        for chunk in value.chunks.into_iter().skip(skip) {
-            match chunk.data {
-                ResTypeValue::START_ELEMENT(node) => {
-                    // Convert the start element node to an xmltree::Element
-                    let mut el = node.to_element(&strings)?;
-                    let namespace = namespaces.get("android").map(|v| v.to_string());
-                    el.namespace = namespace;
-                    el.namespaces = Some(namespaces.clone());
-                    stack.push(el);
+            if item == element.element.name.resolve(strings).as_ref() {
+                if index == path.len() - 1 {
+                    elements.push(element);
+                    continue;
                 }
-                ResTypeValue::END_ELEMENT(_) => {
-                    // Pop the top element and attach it to its parent if exists
-                    if let Some(el) = stack.pop() {
-                        if let Some(parent) = stack.last_mut() {
-                            parent.children.push(xmltree::XMLNode::Element(el));
-                        } else {
-                            // This is the root element; return it
-                            return Ok(el);
-                        }
-                    } else {
-                        return Err(TreeToElementError::UnbalancedElements);
-                    }
-                }
-                ResTypeValue::START_NAMESPACE(ns) => {
-                    let prefix = ns
-                        .prefix
-                        .resolve(&strings)
-                        .ok_or(TreeToElementError::InvalidNameSpace)?;
-                    let uri = ns
-                        .uri
-                        .resolve(&strings)
-                        .ok_or(TreeToElementError::InvalidNameSpace)?;
-
-                    namespaces.put(prefix, uri);
-                }
-                ResTypeValue::END_NAMESPACE(ns) => {
-                    let prefix = ns
-                        .prefix
-                        .resolve(&strings)
-                        .ok_or(TreeToElementError::InvalidNameSpace)?;
-
-                    namespaces.0.remove(&prefix);
-                }
-                _ => {
-                    dbg!(chunk);
-                    todo!();
+                for child in element.children.iter_mut() {
+                    stack.push((index + 1, child));
                 }
             }
         }
 
-        // If the stack is not empty, it means the XML was not properly balanced
-        if !stack.is_empty() {
-            Err(TreeToElementError::UnbalancedElements)
-        } else {
-            Err(TreeToElementError::NoRootElement)
+        elements
+    }
+
+    pub fn get_elements<'a>(&'a self, path: &[&str], strings: &StringPool) -> Vec<&'a XMLTreeNode> {
+        let mut elements: Vec<&XMLTreeNode> = Vec::new();
+
+        let mut stack: Vec<(usize, &XMLTreeNode)> = Vec::new();
+
+        stack.push((0, self));
+
+        while let Some((index, element)) = stack.pop() {
+            let item = path.get(index);
+
+            if item.is_none() {
+                continue;
+            }
+
+            if item == element.element.name.resolve(strings).as_ref() {
+                if index == path.len() - 1 {
+                    elements.push(element);
+                    continue;
+                }
+                for child in &element.children {
+                    stack.push((index + 1, child));
+                }
+            }
         }
+
+        elements
+    }
+
+    pub fn get_attribute<'a>(
+        &'a self,
+        name: &str,
+        strings: &StringPool,
+    ) -> Option<&'a ResXMLTreeAttribute> {
+        self.element
+            .attributes
+            .iter()
+            .find(|attr| attr.name.resolve(strings) == Some(name))
+    }
+
+    pub fn get_attribute_mut<'a>(
+        &'a mut self,
+        name: &str,
+        strings: &StringPool,
+    ) -> Option<&'a mut ResXMLTreeAttribute> {
+        self.element
+            .attributes
+            .iter_mut()
+            .find(|attr| attr.name.resolve(strings) == Some(name))
+    }
+
+    pub fn set_attribute(
+        &mut self,
+        name: &str,
+        value: ResValue,
+        strings: &StringPool,
+    ) -> Option<&mut ResXMLTreeAttribute> {
+        let attr = self
+            .element
+            .attributes
+            .iter_mut()
+            .find(|attr| attr.name.resolve(strings) == Some(name));
+
+        if let Some(attr) = attr {
+            attr.set_value(value);
+            return Some(attr);
+        }
+        None
+    }
+}
+
+impl TryFrom<RawXMLTree> for XMLTree {
+    type Error = XMLTreeParseError;
+    fn try_from(value: RawXMLTree) -> Result<Self, Self::Error> {
+        let mut string_pool: Option<StringPool> = None;
+        let mut resource_map: Option<ResourceMap> = None;
+
+        let mut root: Option<XMLTreeNode> = None;
+        let mut stack: Vec<XMLTreeNode> = Vec::new();
+
+        let mut namespace_stack: Vec<XMLNameSpace> = Vec::new();
+
+        for chunk in value.chunks {
+            match chunk.data {
+                ResTypeValue::StringPool(sp) => string_pool = Some(sp),
+                ResTypeValue::StartElement(start_element) => {
+                    let el = XMLTreeNode {
+                        namespace: namespace_stack.last().copied(),
+                        element: start_element,
+                        children: Vec::new(),
+                    };
+                    stack.push(el);
+                }
+                ResTypeValue::EndElement(_) => {
+                    let el = stack.pop().ok_or(XMLTreeParseError::TooManyEndElements)?;
+                    if let Some(parent) = stack.last_mut() {
+                        parent.children.push(el)
+                    } else {
+                        if root.is_some() {
+                            return Err(XMLTreeParseError::MultipleRootNodes);
+                        }
+                        root = Some(el);
+                    }
+                }
+                ResTypeValue::StartNameSpace(start_namespace) => {
+                    namespace_stack.push(XMLNameSpace {
+                        prefix: start_namespace.prefix,
+                        uri: start_namespace.uri,
+                    })
+                }
+                ResTypeValue::EndNameSpace(_) => {
+                    _ = namespace_stack
+                        .pop()
+                        .ok_or(XMLTreeParseError::TooManyEndNamespaces)?
+                }
+                ResTypeValue::ResourceMap(rm) => resource_map = Some(rm),
+                v => return Err(XMLTreeParseError::UnrecognisedChunk((&v).into())),
+            }
+        }
+
+        if !stack.is_empty() {
+            return Err(XMLTreeParseError::TooFewEndElements);
+        }
+
+        if !namespace_stack.is_empty() {
+            return Err(XMLTreeParseError::TooFewEndNamespaces);
+        }
+
+        Ok(Self {
+            string_pool: string_pool.ok_or(XMLTreeParseError::NoStringPool)?,
+            resource_map,
+            root: root.ok_or(XMLTreeParseError::NoRoot)?,
+        })
     }
 }

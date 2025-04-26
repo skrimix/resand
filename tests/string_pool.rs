@@ -18,18 +18,15 @@
 use std::io::Cursor;
 
 use binrw::{BinReaderExt, BinWriterExt};
-use libaxml::{
-    defs::ResChunk_header,
-    string_pool::{
-        ResStringPool_ref, ResStringPool_span, StringPool, StringPoolFlags, StringPoolString16,
-        StringPoolString8, StringPoolStrings,
-    },
+use libaxml::string_pool::{
+    calc_length16, calc_length8, new_length16, new_length8, ResStringPoolRef, ResStringPoolSpan,
+    StringPoolFlags, StringPoolString16, StringPoolString8,
 };
 
 #[test]
 fn test_read_res_string_pool_ref() {
     let mut reader = Cursor::new(b"\x10\xef\xcd\xab");
-    let rspr: ResStringPool_ref = reader.read_le().unwrap();
+    let rspr: ResStringPoolRef = reader.read_le().unwrap();
 
     assert_eq!(rspr.index, 0xabcdef10)
 }
@@ -38,7 +35,7 @@ fn test_read_res_string_pool_ref() {
 fn test_write_res_string_pool_ref() {
     let mut writer = Cursor::new(Vec::new());
     writer
-        .write_le(&ResStringPool_ref { index: 0x00120950 })
+        .write_le(&ResStringPoolRef { index: 0x00120950 })
         .unwrap();
 
     assert_eq!(writer.into_inner(), b"\x50\x09\x12\x00")
@@ -89,21 +86,21 @@ fn test_string_pool_flags_to_int() {
 #[test]
 fn test_read_res_string_pool_span() {
     let mut reader = Cursor::new(b"\x01\x00\x00\x50\x05\x00\x00\x00\x00\x05\x00\x00");
-    let value: ResStringPool_span = reader.read_le().unwrap();
+    let value: ResStringPoolSpan = reader.read_le().unwrap();
 
-    assert_eq!(value.name, ResStringPool_ref { index: 0x50000001 });
-    assert_eq!(value.firstChar, 0x5);
-    assert_eq!(value.lastChar, 0x500);
+    assert_eq!(value.name, ResStringPoolRef { index: 0x50000001 });
+    assert_eq!(value.first_char, 0x5);
+    assert_eq!(value.last_char, 0x500);
 }
 
 #[test]
 fn test_write_res_string_pool_span() {
     let mut writer = Cursor::new(Vec::new());
     writer
-        .write_le(&ResStringPool_span {
-            name: ResStringPool_ref { index: 0x00120950 },
-            firstChar: 0x0123abcd,
-            lastChar: 0x12345678,
+        .write_le(&ResStringPoolSpan {
+            name: ResStringPoolRef { index: 0x00120950 },
+            first_char: 0x0123abcd,
+            last_char: 0x12345678,
         })
         .unwrap();
 
@@ -272,3 +269,21 @@ fn test_write_string_pool_string16_very_long() {
     assert_eq!(writer.into_inner(), test_input);
 }
 // TODO: test more interesting utf8 stuff
+
+#[test]
+fn test_new_string_pool_length() {
+    let (l1, l2) = calc_length8(0x50);
+    assert_eq!(new_length8(l1, l2), 0x50);
+
+    let (l1, l2) = calc_length8(0x1000);
+    assert_eq!(new_length8(l1, l2), 0x1000);
+
+    let (l1, l2) = calc_length16(0x50);
+    assert_eq!(new_length16(l1, l2), 0x50);
+
+    let (l1, l2) = calc_length16(0x1000);
+    assert_eq!(new_length16(l1, l2), 0x1000);
+
+    let (l1, l2) = calc_length16(0x10000);
+    assert_eq!(new_length16(l1, l2), 0x10000);
+}
