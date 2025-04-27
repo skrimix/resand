@@ -145,12 +145,7 @@ impl StringPool {
     }
 }
 
-pub fn calc_strings_start(
-    header_pos: u64,
-    current_pos: u64,
-    total_str: u32,
-    total_style: u32,
-) -> u32 {
+fn calc_strings_start(header_pos: u64, current_pos: u64, total_str: u32, total_style: u32) -> u32 {
     let from_current = 4 + // stringsStart
     4 + // stylesStart
     (4 * total_str) + // string_indices
@@ -163,7 +158,7 @@ pub fn calc_strings_start(
     (aligned_pos - header_pos) as u32
 }
 
-pub fn calc_string_indices(strings: &StringPoolStrings) -> Vec<u32> {
+fn calc_string_indices(strings: &StringPoolStrings) -> Vec<u32> {
     let mut indices: Vec<u32> = Vec::new();
 
     let mut current: u32 = 0;
@@ -186,7 +181,7 @@ pub fn calc_string_indices(strings: &StringPoolStrings) -> Vec<u32> {
     indices
 }
 
-pub fn calc_style_indices(total_style: u32) -> Vec<u32> {
+fn calc_style_indices(total_style: u32) -> Vec<u32> {
     let mut indices: Vec<u32> = Vec::new();
 
     let mut current: u32 = 0;
@@ -199,7 +194,7 @@ pub fn calc_style_indices(total_style: u32) -> Vec<u32> {
     indices
 }
 
-pub fn calc_styles_start(
+fn calc_styles_start(
     header_pos: u64,
     current_pos: u64,
     strings_start: u32,
