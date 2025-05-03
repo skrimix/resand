@@ -1,10 +1,10 @@
-use std::{fmt::Display, num::ParseIntError, str::FromStr};
+use std::{fmt::Display, str::FromStr};
 
 use binrw::{binrw, BinRead, BinWrite};
 
 use crate::{
     defs::ResTableRef,
-    string_pool::{ResStringPoolRef, StringPool},
+    string_pool::{ResStringPoolRef, StringPoolHandler},
 };
 
 #[binrw]
@@ -16,22 +16,24 @@ pub struct ResValue {
     #[br(assert(size==8))]
     size: u16,
 
-    /// Always set to 0.
+    /// Always set to 0. Reserved
     #[br(temp)]
     #[bw(calc = 0)]
     #[br(assert(res0==0))]
     res0: u8,
 
-    /// The data for this item, as interpreted according to dataType.
+    /// The data for this item
     pub data: ResValueType,
 }
 
 impl ResValue {
+    /// Create a new ResValue struct
     pub fn new(data: ResValueType) -> Self {
         Self { data }
     }
 
-    pub fn write_string(&mut self, string: String, string_pool: &mut StringPool) {
+    /// Set the value to be a string, allocating the string in the string pool if necessary
+    pub fn write_string(&mut self, string: String, string_pool: &mut StringPoolHandler) {
         let reference = string_pool.allocate(string);
 
         self.data = ResValueType::String(reference);
@@ -253,54 +255,4 @@ pub enum ResValueType {
     /// The 'data' is a raw integer value of the form #rgb.
     #[brw(magic(0x1fu8))]
     IntColorRGB4(RGB4),
-}
-
-#[derive(Debug)]
-pub enum InvalidResType {
-    InvalidInteger(ParseIntError),
-}
-
-impl From<ParseIntError> for InvalidResType {
-    fn from(value: ParseIntError) -> Self {
-        Self::InvalidInteger(value)
-    }
-}
-
-impl ResValueType {
-    pub fn unresolve(string: &str, pool: &mut StringPool, key: &str) -> Self {
-        let non_int_keys = [
-            "versionName",
-            "compileSdkVersionCodename",
-            "platformBuildVersionName",
-        ];
-        let non_float = ["compileSdkVersionCodename", "versionName"];
-        if let Ok(reference) = string.parse() {
-            return ResValueType::Reference(reference);
-        }
-        if let Ok(bool) = string.parse() {
-            return ResValueType::IntBoolean(bool);
-        }
-
-        if let Ok(int) = string.parse() {
-            if !non_int_keys.contains(&key) {
-                return ResValueType::IntDec(int);
-            }
-        }
-
-        if string.chars().take(2).collect::<String>() == "0x" {
-            let str: String = string.chars().skip(2).collect();
-            if let Ok(int) = u32::from_str_radix(&str, 16) {
-                if !non_int_keys.contains(&key) {
-                    return ResValueType::IntHex(int);
-                }
-            }
-        }
-        if let Ok(float) = string.parse() {
-            if !non_float.contains(&key) {
-                return ResValueType::Float(float);
-            }
-        }
-
-        ResValueType::String(pool.allocate(string.to_string()))
-    }
 }

@@ -1,13 +1,16 @@
 // Everything here is based off of https://android.googlesource.com/platform/frameworks/base/+/master/libs/androidfw/include/androidfw/ResourceTypes.h
 
-use std::{fmt::Display, io::SeekFrom, num::ParseIntError, str::FromStr};
+use std::{fmt::Display, io::SeekFrom};
 
 use binrw::{binread, binrw, BinRead, BinResult, BinWrite};
 
 use crate::{
     align,
     string_pool::StringPool,
-    table::{ResTable, ResTablePackage, ResTableType, ResTableTypeSpec},
+    table::{
+        ResTable, ResTableLib, ResTableOverlayable, ResTableOverlayablePolicy, ResTablePackage,
+        ResTableStagedAlias, ResTableType, ResTableTypeSpec,
+    },
     xmltree::{
         RawXMLTree, ResXMLTreeAttrExt, ResXMLTreeCDataExt, ResXMLTreeEndElementExt,
         ResXMLTreeNameSpaceExt,
@@ -21,23 +24,38 @@ use crate::{
 pub struct ResChunk {
     /// Type identifier for this chunk. The meaning of this value depends on the containing chunk.
     #[br(temp)]
-    pub r#type: ResType,
+    r#type: ResType,
     /// Size of the chunk header (in bytes). Adding this value to the address of the chunk allows
     /// you to find its associated data (if any).
     #[br(temp)]
-    pub header_size: u16,
+    header_size: u16,
     /// Total size of this chunk (in bytes). This is the chunkSize plus the size of any data
     /// associated with the chunk. Adding this value to the chunk allows you to completely skip its
     /// contents (including any child chunks). If this value is the same as chunkSize, there is no
     /// data associated with the chunk.
     #[br(temp)]
-    pub size: u32,
+    size: u32,
 
+    /// The actual data of this chunk. The type is based on the rtype field. The type is a
+    /// [`ResTypeValue`], if not all of the bytes specified by [`size`] are read by the type, then
+    /// the size will be padded so that end position is correct.
     #[br(parse_with=parse_res_type_value, args(&r#type, size, header_size))]
     #[br(pad_size_to=(size as u64) - 2 - 2 - 4)]
     pub data: ResTypeValue,
 }
 
+impl HeaderSizeStatic for ResChunk {
+    fn header_size() -> usize {
+        // 2 for res type,
+        // 2 for header size
+        // 4 for data size
+        8
+    }
+}
+
+/// Like a normal res chunk, except it takes a reference to a res type value rather than an
+/// owned value. Used because binrw::write_options takes a reference, whereas the ResChunk data
+/// type wants an owned ResTypeValue.
 #[derive(Debug, PartialEq, Clone)]
 pub struct ResChunkWriteRef<'a> {
     pub data: ResTypeValueWriteRef<'a>,
@@ -54,7 +72,7 @@ impl BinWrite for ResChunkWriteRef<'_> {
         let r#type: ResType = (&self.data).into();
         r#type.write_options(writer, endian, ())?;
 
-        let header_size = self.data.get_header_size() as u16;
+        let header_size = (self.data.header_size() + ResChunk::header_size()) as u16;
         header_size.write_options(writer, endian, ())?;
 
         let size_pos = writer.stream_position()?;
@@ -109,19 +127,19 @@ impl From<&ResTypeValue> for ResType {
             ResTypeValue::Table(_) => ResType::Table,
             ResTypeValue::StringPool(_) => ResType::StringPool,
             ResTypeValue::XML(_) => ResType::XML,
-            ResTypeValue::StartElement(_) => ResType::StartElement,
-            ResTypeValue::CData(_) => ResType::CData,
+            ResTypeValue::XMLStartElement(_) => ResType::XMLStartElement,
+            ResTypeValue::XMLCData(_) => ResType::XMLCData,
             ResTypeValue::TableType(_) => ResType::TableType,
             ResTypeValue::TableSpec(_) => ResType::TableSpecType,
             ResTypeValue::TablePackage(_) => ResType::PackageType,
-            ResTypeValue::TableLibrary => ResType::TableLibrary,
-            ResTypeValue::EndElement(_) => ResType::EndElement,
+            ResTypeValue::TableLibrary(_) => ResType::TableLibrary,
+            ResTypeValue::XMLEndElement(_) => ResType::XMLEndElement,
             ResTypeValue::ResourceMap(_) => ResType::ResourceMap,
-            ResTypeValue::TableStagedAlias => ResType::TableStagedAlias,
-            ResTypeValue::EndNameSpace(_) => ResType::EndNameSpace,
-            ResTypeValue::TableOverlayabale => ResType::TableOverlayable,
-            ResTypeValue::StartNameSpace(_) => ResType::StartNameSpace,
-            ResTypeValue::TableOverlayablePolicy => ResType::TableOverlayabalePolicy,
+            ResTypeValue::TableStagedAlias(_) => ResType::TableStagedAlias,
+            ResTypeValue::XMLEndNameSpace(_) => ResType::XMLEndNameSpace,
+            ResTypeValue::TableOverlayable(_) => ResType::TableOverlayable,
+            ResTypeValue::XMLStartNameSpace(_) => ResType::XMLStartNameSpace,
+            ResTypeValue::TableOverlayablePolicy(_) => ResType::TableOverlayablePolicy,
         }
     }
 }
@@ -133,19 +151,19 @@ impl From<&ResTypeValueWriteRef<'_>> for ResType {
             ResTypeValueWriteRef::Table(_) => ResType::Table,
             ResTypeValueWriteRef::StringPool(_) => ResType::StringPool,
             ResTypeValueWriteRef::XML(_) => ResType::XML,
-            ResTypeValueWriteRef::StartElement(_) => ResType::StartElement,
-            ResTypeValueWriteRef::CData(_) => ResType::CData,
+            ResTypeValueWriteRef::XMLStartElement(_) => ResType::XMLStartElement,
+            ResTypeValueWriteRef::XMLCData(_) => ResType::XMLCData,
             ResTypeValueWriteRef::TableType(_) => ResType::TableType,
             ResTypeValueWriteRef::TableSpec(_) => ResType::TableSpecType,
             ResTypeValueWriteRef::TablePackage(_) => ResType::PackageType,
-            ResTypeValueWriteRef::TableLibrary => ResType::TableLibrary,
-            ResTypeValueWriteRef::EndElement(_) => ResType::EndElement,
+            ResTypeValueWriteRef::TableLibrary(_) => ResType::TableLibrary,
+            ResTypeValueWriteRef::XMLEndElement(_) => ResType::XMLEndElement,
             ResTypeValueWriteRef::ResourceMap(_) => ResType::ResourceMap,
-            ResTypeValueWriteRef::TableStagedAlias => ResType::TableStagedAlias,
-            ResTypeValueWriteRef::EndNameSpace(_) => ResType::EndNameSpace,
-            ResTypeValueWriteRef::TableOverlayabale => ResType::TableOverlayable,
-            ResTypeValueWriteRef::StartNameSpace(_) => ResType::StartNameSpace,
-            ResTypeValueWriteRef::TableOverlayabalePolicy => ResType::TableOverlayabalePolicy,
+            ResTypeValueWriteRef::TableStagedAlias(_) => ResType::TableStagedAlias,
+            ResTypeValueWriteRef::XMLEndNameSpace(_) => ResType::XMLEndNameSpace,
+            ResTypeValueWriteRef::TableOverlayable(_) => ResType::TableOverlayable,
+            ResTypeValueWriteRef::XMLStartNameSpace(_) => ResType::XMLStartNameSpace,
+            ResTypeValueWriteRef::TableOverlayablePolicy(_) => ResType::TableOverlayablePolicy,
         }
     }
 }
@@ -157,19 +175,21 @@ impl<'a> From<&'a ResTypeValue> for ResTypeValueWriteRef<'a> {
             ResTypeValue::Table(t) => ResTypeValueWriteRef::Table(t),
             ResTypeValue::StringPool(sp) => ResTypeValueWriteRef::StringPool(sp),
             ResTypeValue::XML(x) => ResTypeValueWriteRef::XML(x),
-            ResTypeValue::StartElement(s) => ResTypeValueWriteRef::StartElement(s),
+            ResTypeValue::XMLStartElement(s) => ResTypeValueWriteRef::XMLStartElement(s),
             ResTypeValue::TableType(t) => ResTypeValueWriteRef::TableType(t),
             ResTypeValue::TableSpec(s) => ResTypeValueWriteRef::TableSpec(s),
             ResTypeValue::TablePackage(p) => ResTypeValueWriteRef::TablePackage(p),
-            ResTypeValue::TableLibrary => ResTypeValueWriteRef::TableLibrary,
+            ResTypeValue::TableLibrary(l) => ResTypeValueWriteRef::TableLibrary(l),
             ResTypeValue::ResourceMap(m) => ResTypeValueWriteRef::ResourceMap(m),
-            ResTypeValue::TableStagedAlias => ResTypeValueWriteRef::TableStagedAlias,
-            ResTypeValue::EndNameSpace(e) => ResTypeValueWriteRef::EndNameSpace(e),
-            ResTypeValue::TableOverlayabale => ResTypeValueWriteRef::TableOverlayabale,
-            ResTypeValue::StartNameSpace(s) => ResTypeValueWriteRef::StartNameSpace(s),
-            ResTypeValue::TableOverlayablePolicy => ResTypeValueWriteRef::TableOverlayabalePolicy,
-            ResTypeValue::EndElement(e) => ResTypeValueWriteRef::EndElement(e),
-            _ => todo!(),
+            ResTypeValue::TableStagedAlias(a) => ResTypeValueWriteRef::TableStagedAlias(a),
+            ResTypeValue::XMLEndNameSpace(e) => ResTypeValueWriteRef::XMLEndNameSpace(e),
+            ResTypeValue::TableOverlayable(o) => ResTypeValueWriteRef::TableOverlayable(o),
+            ResTypeValue::XMLStartNameSpace(s) => ResTypeValueWriteRef::XMLStartNameSpace(s),
+            ResTypeValue::TableOverlayablePolicy(p) => {
+                ResTypeValueWriteRef::TableOverlayablePolicy(p)
+            }
+            ResTypeValue::XMLEndElement(e) => ResTypeValueWriteRef::XMLEndElement(e),
+            ResTypeValue::XMLCData(c) => ResTypeValueWriteRef::XMLCData(c),
         }
     }
 }
@@ -177,15 +197,6 @@ impl<'a> From<&'a ResTypeValue> for ResTypeValueWriteRef<'a> {
 impl From<ResTypeValue> for ResChunk {
     fn from(value: ResTypeValue) -> Self {
         Self { data: value }
-    }
-}
-
-#[derive(Debug)]
-pub struct NotImplimentedError;
-
-impl Display for NotImplimentedError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "not implimented error")
     }
 }
 
@@ -197,7 +208,7 @@ impl Display for NotImplimentedError {
 #[derive(Debug, PartialEq, Clone, Default)]
 #[br(import(size: u32))]
 pub struct ResourceMap {
-    #[br(count=(size-ResourceMap::get_header_size() as u32) / 4)]
+    #[br(count=(size-(ResourceMap::header_size() + ResChunk::header_size()) as u32) / 4)]
     pub mapping: Vec<ResTableRef>,
 }
 
@@ -209,89 +220,115 @@ impl From<ResourceMap> for ResChunk {
     }
 }
 
-impl ResourceMap {
-    pub fn get_header_size() -> usize {
-        0x8
-    }
+/// Trait for getting the header size from an instance of a type
+pub trait HeaderSizeInstance {
+    /// Get the header size, does not include the size of the res chunk header, or any other parent
+    /// wrappers
+    fn header_size(&self) -> usize;
+}
 
+/// Trait for getting the header size from a type
+pub trait HeaderSizeStatic {
+    /// Get the header size, does not include the size of the res chunk header, or any other parent
+    /// wrappers
+    fn header_size() -> usize;
+}
+
+impl HeaderSizeStatic for ResourceMap {
+    fn header_size() -> usize {
+        0
+    }
+}
+
+impl ResourceMap {
+    /// Create a new empty resource map
     pub fn new() -> ResourceMap {
         ResourceMap::default()
     }
 }
 
+/// Enum for all possible values for a [`ResChunk`]
 #[derive(Debug, PartialEq, Clone)]
 pub enum ResTypeValue {
     Null,
     StringPool(StringPool),
     Table(ResTable),
     XML(RawXMLTree),
-    StartNameSpace(ResXMLTreeNameSpaceExt),
-    EndNameSpace(ResXMLTreeNameSpaceExt),
-    StartElement(ResXMLTreeAttrExt),
-    EndElement(ResXMLTreeEndElementExt),
-    CData(ResXMLTreeCDataExt),
+    XMLStartNameSpace(ResXMLTreeNameSpaceExt),
+    XMLEndNameSpace(ResXMLTreeNameSpaceExt),
+    XMLStartElement(ResXMLTreeAttrExt),
+    XMLEndElement(ResXMLTreeEndElementExt),
+    XMLCData(ResXMLTreeCDataExt),
     ResourceMap(ResourceMap),
     TablePackage(ResTablePackage),
     TableType(ResTableType),
     TableSpec(ResTableTypeSpec),
-    TableLibrary,
-    TableOverlayabale,
-    TableOverlayablePolicy,
-    TableStagedAlias,
+    TableLibrary(ResTableLib),
+    TableOverlayable(ResTableOverlayable),
+    TableOverlayablePolicy(ResTableOverlayablePolicy),
+    TableStagedAlias(ResTableStagedAlias),
 }
 
+/// Enum for all possible values for a [`ResChunk`]
+/// Differs to [`ResTypeValue`] because each variant holds a reference to the associated type, not
+/// an owned value.
 #[derive(Debug, PartialEq, Clone)]
 pub enum ResTypeValueWriteRef<'a> {
     Null,
     StringPool(&'a StringPool),
     Table(&'a ResTable),
     XML(&'a RawXMLTree),
-    StartNameSpace(&'a ResXMLTreeNameSpaceExt),
-    EndNameSpace(&'a ResXMLTreeNameSpaceExt),
-    StartElement(&'a ResXMLTreeAttrExt),
-    EndElement(&'a ResXMLTreeEndElementExt),
-    CData(&'a ResXMLTreeCDataExt),
+    XMLStartNameSpace(&'a ResXMLTreeNameSpaceExt),
+    XMLEndNameSpace(&'a ResXMLTreeNameSpaceExt),
+    XMLStartElement(&'a ResXMLTreeAttrExt),
+    XMLEndElement(&'a ResXMLTreeEndElementExt),
+    XMLCData(&'a ResXMLTreeCDataExt),
     ResourceMap(&'a ResourceMap),
     TablePackage(&'a ResTablePackage),
     TableType(&'a ResTableType),
     TableSpec(&'a ResTableTypeSpec),
-    TableLibrary,
-    TableOverlayabale,
-    TableOverlayabalePolicy,
-    TableStagedAlias,
+    TableLibrary(&'a ResTableLib),
+    TableOverlayable(&'a ResTableOverlayable),
+    TableOverlayablePolicy(&'a ResTableOverlayablePolicy),
+    TableStagedAlias(&'a ResTableStagedAlias),
 }
 
-impl ResTypeValue {
-    pub fn get_header_size(&self) -> usize {
+impl HeaderSizeInstance for ResTypeValue {
+    fn header_size(&self) -> usize {
         let wref: ResTypeValueWriteRef = self.into();
-        wref.get_header_size()
+        wref.header_size()
     }
 }
 
-impl ResTypeValueWriteRef<'_> {
-    pub fn get_header_size(&self) -> usize {
+impl HeaderSizeInstance for ResTypeValueWriteRef<'_> {
+    fn header_size(&self) -> usize {
         match self {
-            ResTypeValueWriteRef::XML(_) => RawXMLTree::get_header_size(),
-            ResTypeValueWriteRef::StringPool(_) => StringPool::get_header_size(),
-            ResTypeValueWriteRef::ResourceMap(_) => ResourceMap::get_header_size(),
-            ResTypeValueWriteRef::StartNameSpace(_) => ResXMLTreeNameSpaceExt::get_header_size(),
-            ResTypeValueWriteRef::StartElement(_) => ResXMLTreeAttrExt::get_header_size(),
-            ResTypeValueWriteRef::EndElement(_) => ResXMLTreeEndElementExt::get_header_size(),
-            ResTypeValueWriteRef::EndNameSpace(_) => ResXMLTreeNameSpaceExt::get_header_size(),
-            ResTypeValueWriteRef::Table(_) => ResTable::get_header_size(),
-            ResTypeValueWriteRef::TableSpec(_) => ResTableTypeSpec::get_header_size(),
-            ResTypeValueWriteRef::TableType(t) => t.get_header_size(),
-            ResTypeValueWriteRef::TablePackage(_) => ResTablePackage::get_header_size(),
-            t => {
-                dbg!(t);
-                todo!()
+            ResTypeValueWriteRef::Null => 0,
+            ResTypeValueWriteRef::XML(_) => RawXMLTree::header_size(),
+            ResTypeValueWriteRef::StringPool(_) => StringPool::header_size(),
+            ResTypeValueWriteRef::ResourceMap(_) => ResourceMap::header_size(),
+            ResTypeValueWriteRef::XMLStartNameSpace(_) => ResXMLTreeNameSpaceExt::header_size(),
+            ResTypeValueWriteRef::XMLStartElement(_) => ResXMLTreeAttrExt::header_size(),
+            ResTypeValueWriteRef::XMLEndElement(_) => ResXMLTreeEndElementExt::header_size(),
+            ResTypeValueWriteRef::XMLCData(_) => ResXMLTreeCDataExt::header_size(),
+            ResTypeValueWriteRef::XMLEndNameSpace(_) => ResXMLTreeNameSpaceExt::header_size(),
+            ResTypeValueWriteRef::Table(_) => ResTable::header_size(),
+            ResTypeValueWriteRef::TableSpec(_) => ResTableTypeSpec::header_size(),
+            ResTypeValueWriteRef::TableType(t) => t.header_size(),
+            ResTypeValueWriteRef::TablePackage(_) => ResTablePackage::header_size(),
+            ResTypeValueWriteRef::TableLibrary(_) => ResTableLib::header_size(),
+            ResTypeValueWriteRef::TableOverlayable(_) => ResTableOverlayable::header_size(),
+            ResTypeValueWriteRef::TableOverlayablePolicy(_) => {
+                ResTableOverlayablePolicy::header_size()
             }
+
+            ResTypeValueWriteRef::TableStagedAlias(_) => ResTableStagedAlias::header_size(),
         }
     }
 }
 
 #[binrw::parser(reader, endian)]
-pub fn parse_res_type_value(
+fn parse_res_type_value(
     res_type: &ResType,
     size: u32,
     header_size: u16,
@@ -305,17 +342,20 @@ pub fn parse_res_type_value(
         ResType::ResourceMap => {
             ResTypeValue::ResourceMap(ResourceMap::read_options(reader, endian, (size,))?)
         }
-        ResType::StartNameSpace => {
-            ResTypeValue::StartNameSpace(ResXMLTreeNameSpaceExt::read_options(reader, endian, ())?)
+        ResType::XMLStartNameSpace => ResTypeValue::XMLStartNameSpace(
+            ResXMLTreeNameSpaceExt::read_options(reader, endian, ())?,
+        ),
+        ResType::XMLStartElement => {
+            ResTypeValue::XMLStartElement(ResXMLTreeAttrExt::read_options(reader, endian, ())?)
         }
-        ResType::StartElement => {
-            ResTypeValue::StartElement(ResXMLTreeAttrExt::read_options(reader, endian, ())?)
+        ResType::XMLEndElement => {
+            ResTypeValue::XMLEndElement(ResXMLTreeEndElementExt::read_options(reader, endian, ())?)
         }
-        ResType::EndElement => {
-            ResTypeValue::EndElement(ResXMLTreeEndElementExt::read_options(reader, endian, ())?)
+        ResType::XMLCData => {
+            ResTypeValue::XMLCData(ResXMLTreeCDataExt::read_options(reader, endian, ())?)
         }
-        ResType::EndNameSpace => {
-            ResTypeValue::EndNameSpace(ResXMLTreeNameSpaceExt::read_options(reader, endian, ())?)
+        ResType::XMLEndNameSpace => {
+            ResTypeValue::XMLEndNameSpace(ResXMLTreeNameSpaceExt::read_options(reader, endian, ())?)
         }
         ResType::Table => ResTypeValue::Table(ResTable::read_options(reader, endian, ())?),
         ResType::PackageType => {
@@ -327,34 +367,41 @@ pub fn parse_res_type_value(
         ResType::TableType => {
             ResTypeValue::TableType(ResTableType::read_options(reader, endian, (header_size,))?)
         }
-        _ => todo!(),
+        ResType::TableLibrary => {
+            ResTypeValue::TableLibrary(ResTableLib::read_options(reader, endian, ())?)
+        }
+        ResType::TableOverlayable => {
+            ResTypeValue::TableOverlayable(ResTableOverlayable::read_options(reader, endian, ())?)
+        }
+        ResType::TableOverlayablePolicy => ResTypeValue::TableOverlayablePolicy(
+            ResTableOverlayablePolicy::read_options(reader, endian, ())?,
+        ),
+        ResType::TableStagedAlias => {
+            ResTypeValue::TableStagedAlias(ResTableStagedAlias::read_options(reader, endian, ())?)
+        }
     })
 }
 
 #[binrw::writer(writer, endian)]
-pub fn write_res_type_value(value: &ResTypeValue) -> BinResult<()> {
-    let wref: ResTypeValueWriteRef = value.into();
-    write_res_type_write_ref_value(&wref, writer, endian, ())
-}
-
-#[binrw::writer(writer, endian)]
-pub fn write_res_type_write_ref_value(value: &ResTypeValueWriteRef) -> BinResult<()> {
+fn write_res_type_write_ref_value(value: &ResTypeValueWriteRef) -> BinResult<()> {
     match value {
+        ResTypeValueWriteRef::Null => (),
         ResTypeValueWriteRef::StringPool(sp) => sp.write_options(writer, endian, ())?,
-        ResTypeValueWriteRef::StartElement(st) => st.write_options(writer, endian, ())?,
-        ResTypeValueWriteRef::EndElement(ee) => ee.write_options(writer, endian, ())?,
+        ResTypeValueWriteRef::XMLStartElement(st) => st.write_options(writer, endian, ())?,
+        ResTypeValueWriteRef::XMLEndElement(ee) => ee.write_options(writer, endian, ())?,
+        ResTypeValueWriteRef::XMLCData(d) => d.write_options(writer, endian, ())?,
         ResTypeValueWriteRef::XML(xml) => xml.write_options(writer, endian, ())?,
-        ResTypeValueWriteRef::StartNameSpace(sn) => sn.write_options(writer, endian, ())?,
-        ResTypeValueWriteRef::EndNameSpace(en) => en.write_options(writer, endian, ())?,
+        ResTypeValueWriteRef::XMLStartNameSpace(sn) => sn.write_options(writer, endian, ())?,
+        ResTypeValueWriteRef::XMLEndNameSpace(en) => en.write_options(writer, endian, ())?,
         ResTypeValueWriteRef::ResourceMap(rm) => rm.write_options(writer, endian, ())?,
         ResTypeValueWriteRef::Table(tb) => tb.write_options(writer, endian, ())?,
         ResTypeValueWriteRef::TablePackage(tp) => tp.write_options(writer, endian, ())?,
         ResTypeValueWriteRef::TableSpec(sp) => sp.write_options(writer, endian, ())?,
         ResTypeValueWriteRef::TableType(tt) => tt.write_options(writer, endian, ())?,
-        v => {
-            dbg!(v);
-            todo!()
-        }
+        ResTypeValueWriteRef::TableLibrary(tl) => tl.write_options(writer, endian, ())?,
+        ResTypeValueWriteRef::TableOverlayable(to) => to.write_options(writer, endian, ())?,
+        ResTypeValueWriteRef::TableOverlayablePolicy(tp) => tp.write_options(writer, endian, ())?,
+        ResTypeValueWriteRef::TableStagedAlias(ts) => ts.write_options(writer, endian, ())?,
     }
 
     Ok(())
@@ -362,15 +409,19 @@ pub fn write_res_type_write_ref_value(value: &ResTypeValueWriteRef) -> BinResult
 
 impl ResChunk {
     /// Subtracts the header size (8) from the current pos. Useful when a struct needs to find the
-    /// start offset of the header. If pos is < 8, 0 is returned.
+    /// start offset of the header. If pos is <= 8, 0 is returned.
     pub fn get_header_offset(pos: u64) -> u64 {
-        if pos <= 8 {
+        let header_size: u64 = ResChunk::header_size() as u64;
+        if pos <= header_size {
             return 0;
         }
-        pos - 8 // header size (2 + 2 + 4)
+        pos - header_size
     }
 }
 
+/// Possible types for the data in a [`ResChunk`]. Note that this does not hold the actual data of
+/// the chunk, that is specified in [`ResTypeValue`], this is just for identification, parsing, and
+/// writing purposes.
 #[derive(Debug, PartialEq, BinRead, BinWrite)]
 pub enum ResType {
     #[brw(magic(0x0000u16))]
@@ -381,25 +432,18 @@ pub enum ResType {
     Table,
     #[brw(magic(0x0003u16))]
     XML,
-    // Chunk types in RES_XML_TYPE
-    // RES_XML_FIRST_CHUNK_TYPE = 0x0100,
     #[brw(magic(0x0100u16))]
-    StartNameSpace,
+    XMLStartNameSpace,
     #[brw(magic(0x0101u16))]
-    EndNameSpace,
+    XMLEndNameSpace,
     #[brw(magic(0x0102u16))]
-    StartElement,
+    XMLStartElement,
     #[brw(magic(0x0103u16))]
-    EndElement,
+    XMLEndElement,
     #[brw(magic(0x0104u16))]
-    CData,
-    //#[brw(magic(0x017fu16))]
-    //RES_XML_LAST_CHUNK_TYPE,
-    /// This contains a uint32_t array mapping strings in the string
-    /// pool back to resource identifiers.  It is optional.
+    XMLCData,
     #[brw(magic(0x0180u16))]
     ResourceMap,
-    // Chunk types in RES_TABLE_TYPE
     #[brw(magic(0x0200u16))]
     PackageType,
     #[brw(magic(0x0201u16))]
@@ -411,7 +455,7 @@ pub enum ResType {
     #[brw(magic(0x0204u16))]
     TableOverlayable,
     #[brw(magic(0x0205u16))]
-    TableOverlayabalePolicy,
+    TableOverlayablePolicy,
     #[brw(magic(0x0206u16))]
     TableStagedAlias,
 }
@@ -423,18 +467,18 @@ impl Display for ResType {
             ResType::StringPool => "string pool",
             ResType::Table => "table",
             ResType::XML => "xml",
-            ResType::StartNameSpace => "xml start namespace",
-            ResType::EndNameSpace => "xml end namespace",
-            ResType::StartElement => "xml start element",
-            ResType::EndElement => "xml end element",
-            ResType::CData => "xml comment",
+            ResType::XMLStartNameSpace => "xml start namespace",
+            ResType::XMLEndNameSpace => "xml end namespace",
+            ResType::XMLStartElement => "xml start element",
+            ResType::XMLEndElement => "xml end element",
+            ResType::XMLCData => "xml comment",
             ResType::ResourceMap => "xml resource map",
             ResType::PackageType => "table package",
             ResType::TableType => "table type",
             ResType::TableSpecType => "table spec type",
             ResType::TableLibrary => "table library",
             ResType::TableOverlayable => "table overlayable",
-            ResType::TableOverlayabalePolicy => "table overlayable policy",
+            ResType::TableOverlayablePolicy => "table overlayable policy",
             ResType::TableStagedAlias => "table staged alias",
         };
         write!(f, "{}", str)
@@ -473,30 +517,6 @@ impl From<u32> for ResTableRef {
             type_index: (value >> 16) as u8,    // as u8 does & 0xff
             entry_index: value as u16,          // as u16 does & 0xffff
         }
-    }
-}
-
-#[derive(Debug)]
-pub enum ParseResTableRefError {
-    Int(ParseIntError),
-    InvalidStartChar,
-}
-
-impl FromStr for ResTableRef {
-    type Err = ParseResTableRefError;
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let first = s
-            .chars()
-            .next()
-            .ok_or(ParseResTableRefError::InvalidStartChar)?;
-        if first != '@' {
-            return Err(ParseResTableRefError::InvalidStartChar);
-        }
-        let rest: String = s.chars().skip(1).collect();
-
-        let val: u32 = u32::from_str_radix(&rest, 16).map_err(ParseResTableRefError::Int)?;
-
-        Ok(val.into())
     }
 }
 

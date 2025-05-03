@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     io::SeekFrom,
     iter::zip,
     string::{FromUtf16Error, FromUtf8Error},
@@ -6,7 +7,10 @@ use std::{
 
 use binrw::{binrw, file_ptr::parse_from_iter, BinRead, BinResult, BinWrite, VecArgs};
 
-use crate::{align, defs::ResChunk};
+use crate::{
+    align,
+    defs::{HeaderSizeStatic, ResChunk},
+};
 
 #[derive(Debug, BinRead, BinWrite, PartialEq, Clone, Copy, Eq, Hash)]
 pub struct ResStringPoolRef {
@@ -14,12 +18,8 @@ pub struct ResStringPoolRef {
 }
 
 impl ResStringPoolRef {
-    pub fn resolve(self, strings: &StringPool) -> Option<&str> {
-        if self.index == 0xffffffff {
-            return None;
-        }
-
-        strings.resolve(self.index as usize)
+    pub fn resolve(self, strings: &StringPoolHandler) -> Option<&str> {
+        strings.resolve(self)
     }
 
     pub fn null() -> ResStringPoolRef {
@@ -122,9 +122,9 @@ impl From<StringPool> for ResChunk {
     }
 }
 
-impl StringPool {
-    pub fn get_header_size() -> usize {
-        0x1c
+impl HeaderSizeStatic for StringPool {
+    fn header_size() -> usize {
+        20
     }
 }
 
@@ -212,54 +212,100 @@ impl From<FromUtf16Error> for StringDecodeError {
     }
 }
 
-impl StringPool {
-    pub fn resolve(&self, index: usize) -> Option<&str> {
-        match &self.strings {
-            StringPoolStrings::UTF8(utf8) => utf8.get(index).map(|v| v.string.as_str()),
-            StringPoolStrings::UTF16(utf16) => utf16.get(index).map(|v| v.string.as_str()),
-        }
-    }
-    pub fn get_strings(&self) -> Vec<String> {
-        let sps = &self.strings;
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct StringPoolHandler {
+    pub string_pool: StringPool,
+    strings: HashMap<String, ResStringPoolRef>,
+}
 
-        let mut strings: Vec<String> = Vec::new();
-
-        match sps {
-            StringPoolStrings::UTF8(utf8) => {
-                for str in utf8 {
-                    strings.push(str.string.clone());
-                }
-            }
-            StringPoolStrings::UTF16(utf16) => {
-                for str in utf16 {
-                    strings.push(str.string.clone());
-                }
-            }
-        }
-
-        strings
-    }
-
-    pub fn push_string(&mut self, string: String) -> usize {
-        match self.strings {
-            StringPoolStrings::UTF16(ref mut utf16) => {
-                utf16.push(StringPoolString16 { string });
-                utf16.len() - 1
-            }
-            StringPoolStrings::UTF8(ref mut utf8) => {
-                utf8.push(StringPoolString8 { string });
-                utf8.len() - 1
-            }
-        }
+impl StringPoolHandler {
+    pub fn resolve(&self, reference: ResStringPoolRef) -> Option<&str> {
+        self.string_pool.resolve(reference)
     }
 
     pub fn allocate(&mut self, string: String) -> ResStringPoolRef {
-        let val = self.get_strings().iter().position(|s| s == &string);
-        if let Some(v) = val {
-            return ResStringPoolRef { index: v as u32 };
+        let exists = self.strings.get(string.as_str());
+        match exists {
+            Some(index) => *index,
+            None => {
+                let index = self.string_pool.push_string(string.clone());
+                self.strings.insert(string, index);
+
+                index
+            }
         }
-        ResStringPoolRef {
-            index: self.push_string(string) as u32,
+    }
+
+    pub fn new(string_pool: StringPool) -> Self {
+        let mut strings: HashMap<String, ResStringPoolRef> =
+            HashMap::with_capacity(string_pool.strings.len());
+
+        // these to_string calls are ok since this new should only be called once
+        for (i, string) in string_pool.get_strings().enumerate() {
+            strings.insert(string.to_string(), ResStringPoolRef { index: i as u32 });
+        }
+
+        Self {
+            string_pool,
+            strings,
+        }
+    }
+}
+
+impl From<StringPool> for StringPoolHandler {
+    fn from(value: StringPool) -> Self {
+        Self::new(value)
+    }
+}
+
+impl From<StringPoolHandler> for StringPool {
+    fn from(value: StringPoolHandler) -> Self {
+        value.string_pool
+    }
+}
+
+impl StringPool {
+    pub fn resolve(&self, reference: ResStringPoolRef) -> Option<&str> {
+        if reference.index == 0xffffffff {
+            return None;
+        }
+        match &self.strings {
+            StringPoolStrings::UTF8(utf8) => utf8
+                .get(reference.index as usize)
+                .map(|v| v.string.as_str()),
+            StringPoolStrings::UTF16(utf16) => utf16
+                .get(reference.index as usize)
+                .map(|v| v.string.as_str()),
+        }
+    }
+    pub fn get_strings(&self) -> Box<dyn Iterator<Item = &str> + '_> {
+        match &self.strings {
+            StringPoolStrings::UTF8(utf8) => Box::new(utf8.iter().map(|v| v.string.as_str())),
+            StringPoolStrings::UTF16(utf16) => Box::new(utf16.iter().map(|v| v.string.as_str())),
+        }
+    }
+
+    pub fn into_strings(self) -> Box<dyn Iterator<Item = String>> {
+        match self.strings {
+            StringPoolStrings::UTF8(utf8) => Box::new(utf8.into_iter().map(|v| v.string)),
+            StringPoolStrings::UTF16(utf16) => Box::new(utf16.into_iter().map(|v| v.string)),
+        }
+    }
+
+    pub fn push_string(&mut self, string: String) -> ResStringPoolRef {
+        match self.strings {
+            StringPoolStrings::UTF16(ref mut utf16) => {
+                utf16.push(StringPoolString16 { string });
+                ResStringPoolRef {
+                    index: (utf16.len() - 1) as u32,
+                }
+            }
+            StringPoolStrings::UTF8(ref mut utf8) => {
+                utf8.push(StringPoolString8 { string });
+                ResStringPoolRef {
+                    index: (utf8.len() - 1) as u32,
+                }
+            }
         }
     }
 }

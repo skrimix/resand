@@ -1,12 +1,14 @@
-use std::io::{Cursor, Read, Seek, Write};
+use std::{
+    fmt::Display,
+    io::{Cursor, Read, Seek, Write},
+};
 
 use binrw::{binrw, BinRead, BinWrite};
-use thiserror::Error;
 
 use crate::{
-    defs::{parse_chunks, ResChunk, ResType, ResTypeValue, ResourceMap},
+    defs::{parse_chunks, HeaderSizeStatic, ResChunk, ResType, ResTypeValue, ResourceMap},
     res_value::{ResValue, ResValueType},
-    string_pool::{ResStringPoolRef, StringPool},
+    string_pool::{ResStringPoolRef, StringPool, StringPoolHandler},
 };
 
 /// Basic XML tree node. A single item in the XML document. Extended info about the node can be
@@ -17,6 +19,12 @@ pub struct ResXMLTreeNode {
     pub line_number: u32,
     /// Optional XML comment that was associated with the element; -1 if none.
     pub comment: ResStringPoolRef,
+}
+
+impl HeaderSizeStatic for ResXMLTreeNode {
+    fn header_size() -> usize {
+        8
+    }
 }
 
 /// Extended XML tree node for CDATA tags -- includes the CDATA string. Appears header.headerSize
@@ -30,6 +38,12 @@ pub struct ResXMLTreeCDataExt {
     pub typed_data: ResValue,
 }
 
+impl HeaderSizeStatic for ResXMLTreeCDataExt {
+    fn header_size() -> usize {
+        ResXMLTreeNode::header_size()
+    }
+}
+
 /// Extended XML tree node for namespace start / end nodes. Appears header.headerSize bytes after a
 /// ResXMLTree_node.
 #[derive(Debug, PartialEq, BinRead, BinWrite, Copy, Clone)]
@@ -41,9 +55,9 @@ pub struct ResXMLTreeNameSpaceExt {
     pub uri: ResStringPoolRef,
 }
 
-impl ResXMLTreeNameSpaceExt {
-    pub fn get_header_size() -> usize {
-        0x10
+impl HeaderSizeStatic for ResXMLTreeNameSpaceExt {
+    fn header_size() -> usize {
+        ResXMLTreeNode::header_size()
     }
 }
 
@@ -58,9 +72,10 @@ pub struct ResXMLTreeEndElementExt {
     /// node.
     pub name: ResStringPoolRef,
 }
-impl ResXMLTreeEndElementExt {
-    pub fn get_header_size() -> usize {
-        0x10
+
+impl HeaderSizeStatic for ResXMLTreeEndElementExt {
+    fn header_size() -> usize {
+        ResXMLTreeNode::header_size()
     }
 }
 /// Extended XML tree node for start tags -- includes attribute information.
@@ -112,9 +127,9 @@ pub struct ResXMLTreeAttrExt {
     pub attributes: Vec<ResXMLTreeAttribute>,
 }
 
-impl ResXMLTreeAttrExt {
-    pub fn get_header_size() -> usize {
-        0x10
+impl HeaderSizeStatic for ResXMLTreeAttrExt {
+    fn header_size() -> usize {
+        ResXMLTreeNode::header_size()
     }
 }
 
@@ -138,7 +153,7 @@ pub struct ResXMLTreeAttribute {
 }
 
 impl ResXMLTreeAttribute {
-    pub fn write_string(&mut self, string: String, strings: &mut StringPool) {
+    pub fn write_string(&mut self, string: String, strings: &mut StringPoolHandler) {
         let string_pool_ref = strings.allocate(string);
         self.set_value(ResValue::new(ResValueType::String(string_pool_ref)));
     }
@@ -164,11 +179,13 @@ pub struct RawXMLTree {
     pub chunks: Vec<ResChunk>,
 }
 
-impl RawXMLTree {
-    pub fn get_header_size() -> usize {
-        0x8
+impl HeaderSizeStatic for RawXMLTree {
+    fn header_size() -> usize {
+        0
     }
+}
 
+impl RawXMLTree {
     pub fn read<R: Seek + Read>(reader: &mut R) -> Result<RawXMLTree, ReadAXMLError> {
         let header = ResChunk::read_le(reader).map_err(ReadAXMLError::ReadError)?;
 
@@ -187,17 +204,29 @@ impl RawXMLTree {
     }
 }
 
-#[derive(Debug, Error)]
+#[derive(Debug)]
 pub enum ReadAXMLError {
-    #[error("an error occured while reading the axml {0}")]
     ReadError(binrw::Error),
-    #[error("invalid type {0} expected xml")]
     InvalidType(ResType),
 }
 
-#[derive(Debug, Error)]
-#[error("{0}")]
+impl Display for ReadAXMLError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ReadError(e) => write!(f, "failed to read res xml tree: {}", e),
+            Self::InvalidType(t) => write!(f, "invalid type: {} expected XML Tree", t),
+        }
+    }
+}
+
+#[derive(Debug)]
 pub struct WriteAXMLError(pub binrw::Error);
+
+impl Display for WriteAXMLError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
 
 impl From<binrw::Error> for WriteAXMLError {
     fn from(value: binrw::Error) -> Self {
@@ -249,17 +278,24 @@ pub struct XMLTreeNode {
 
 #[derive(Debug, Clone)]
 pub struct XMLTree {
-    pub string_pool: StringPool,
+    pub string_pool: StringPoolHandler,
     pub resource_map: Option<ResourceMap>,
     pub root: XMLTreeNode,
 }
 
-#[derive(Debug, Error)]
+#[derive(Debug)]
 pub enum ReadXMLTreeError {
-    #[error("{0}")]
     ReadData(ReadAXMLError),
-    #[error("{0}")]
     ConvertRaw(XMLTreeParseError),
+}
+
+impl Display for ReadXMLTreeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ReadData(r) => r.fmt(f),
+            Self::ConvertRaw(c) => c.fmt(f),
+        }
+    }
 }
 
 impl XMLTree {
@@ -298,24 +334,32 @@ impl TryFrom<XMLTree> for Vec<u8> {
     }
 }
 
-#[derive(Debug, Error)]
+#[derive(Debug)]
 pub enum XMLTreeParseError {
-    #[error("failed to find string pool in xml tree")]
     NoStringPool,
-    #[error("no root element found")]
     NoRoot,
-    #[error("too many EndNamespace chunks")]
     TooManyEndNamespaces,
-    #[error("too few EndNamespace chunks")]
     TooFewEndNamespaces,
-    #[error("too many EndElement chunks")]
     TooManyEndElements,
-    #[error("too few EndElement chunks")]
     TooFewEndElements,
-    #[error("unrecognised chunk type: {0}")]
     UnrecognisedChunk(ResType),
-    #[error("multiple root nodes found")]
     MultipleRootNodes,
+}
+
+impl Display for XMLTreeParseError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let str = match self {
+            Self::NoStringPool => "failed to find string pool in xml tree".to_string(),
+            Self::NoRoot => "no root element found in xml tree".to_string(),
+            Self::TooManyEndNamespaces => "too many end namespace chunks in xml tree".to_string(),
+            Self::TooFewEndNamespaces => "too few end namespace chunks in xml tree".to_string(),
+            Self::TooManyEndElements => "too many end element chunks in xml tree".to_string(),
+            Self::TooFewEndElements => "too few end element chunks in xml tree".to_string(),
+            Self::UnrecognisedChunk(t) => format!("unrecognised chunk type: {} in xml tree", t),
+            Self::MultipleRootNodes => "multiple root nodes found in xml tree".to_string(),
+        };
+        write!(f, "{}", str)
+    }
 }
 
 impl XMLTreeNode {
@@ -327,7 +371,7 @@ impl XMLTreeNode {
         let parent_ns = self.namespace;
 
         chunks.push(ResChunk {
-            data: ResTypeValue::StartElement(self.element),
+            data: ResTypeValue::XMLStartElement(self.element),
         });
 
         for child in self.children {
@@ -335,7 +379,7 @@ impl XMLTreeNode {
                 None => match parent_ns {
                     None => (),
                     Some(parent_ns) => chunks.push(ResChunk {
-                        data: ResTypeValue::EndNameSpace(ResXMLTreeNameSpaceExt {
+                        data: ResTypeValue::XMLEndNameSpace(ResXMLTreeNameSpaceExt {
                             node,
                             prefix: parent_ns.prefix,
                             uri: parent_ns.uri,
@@ -345,7 +389,7 @@ impl XMLTreeNode {
                 Some(child_ns) => {
                     if parent_ns.is_none_or(|pns| pns != child_ns) {
                         chunks.push(ResChunk {
-                            data: ResTypeValue::StartNameSpace(ResXMLTreeNameSpaceExt {
+                            data: ResTypeValue::XMLStartNameSpace(ResXMLTreeNameSpaceExt {
                                 node: child.element.node,
                                 prefix: child_ns.prefix,
                                 uri: child_ns.uri,
@@ -358,7 +402,7 @@ impl XMLTreeNode {
         }
 
         chunks.push(ResChunk {
-            data: ResTypeValue::EndElement(ResXMLTreeEndElementExt { node, ns, name }),
+            data: ResTypeValue::XMLEndElement(ResXMLTreeEndElementExt { node, ns, name }),
         });
     }
 }
@@ -367,7 +411,7 @@ impl From<XMLTree> for RawXMLTree {
     fn from(value: XMLTree) -> Self {
         let mut chunks: Vec<ResChunk> = Vec::new();
 
-        chunks.push(value.string_pool.into());
+        chunks.push(value.string_pool.string_pool.into());
 
         if let Some(rn) = value.resource_map {
             chunks.push(rn.into())
@@ -384,7 +428,7 @@ impl From<XMLTree> for RawXMLTree {
         };
         if let Some(ns) = ns_ext {
             chunks.push(ResChunk {
-                data: ResTypeValue::StartNameSpace(ns),
+                data: ResTypeValue::XMLStartNameSpace(ns),
             });
         }
 
@@ -392,7 +436,7 @@ impl From<XMLTree> for RawXMLTree {
 
         if let Some(ns) = ns_ext {
             chunks.push(ResChunk {
-                data: ResTypeValue::EndNameSpace(ns),
+                data: ResTypeValue::XMLEndNameSpace(ns),
             });
         }
 
@@ -401,7 +445,11 @@ impl From<XMLTree> for RawXMLTree {
 }
 
 impl XMLTreeNode {
-    pub fn find_element<'a>(&'a self, name: &str, strings: &StringPool) -> Option<&'a XMLTreeNode> {
+    pub fn find_element<'a>(
+        &'a self,
+        name: &str,
+        strings: &StringPoolHandler,
+    ) -> Option<&'a XMLTreeNode> {
         if self.element.name.resolve(strings) == Some(name) {
             return Some(self);
         }
@@ -413,7 +461,11 @@ impl XMLTreeNode {
         None
     }
 
-    pub fn get_child<'a>(&'a self, name: &str, strings: &StringPool) -> Option<&'a XMLTreeNode> {
+    pub fn get_child<'a>(
+        &'a self,
+        name: &str,
+        strings: &StringPoolHandler,
+    ) -> Option<&'a XMLTreeNode> {
         self.children
             .iter()
             .find(|c| c.element.name.resolve(strings) == Some(name))
@@ -422,7 +474,7 @@ impl XMLTreeNode {
     pub fn get_elements_mut<'a>(
         &'a mut self,
         path: &[&str],
-        strings: &StringPool,
+        strings: &StringPoolHandler,
     ) -> Vec<&'a mut XMLTreeNode> {
         let mut elements: Vec<&mut XMLTreeNode> = Vec::new();
 
@@ -451,7 +503,11 @@ impl XMLTreeNode {
         elements
     }
 
-    pub fn get_elements<'a>(&'a self, path: &[&str], strings: &StringPool) -> Vec<&'a XMLTreeNode> {
+    pub fn get_elements<'a>(
+        &'a self,
+        path: &[&str],
+        strings: &StringPoolHandler,
+    ) -> Vec<&'a XMLTreeNode> {
         let mut elements: Vec<&XMLTreeNode> = Vec::new();
 
         let mut stack: Vec<(usize, &XMLTreeNode)> = Vec::new();
@@ -482,7 +538,7 @@ impl XMLTreeNode {
     pub fn get_attribute<'a>(
         &'a self,
         name: &str,
-        strings: &StringPool,
+        strings: &StringPoolHandler,
     ) -> Option<&'a ResXMLTreeAttribute> {
         self.element
             .attributes
@@ -493,7 +549,7 @@ impl XMLTreeNode {
     pub fn get_attribute_mut<'a>(
         &'a mut self,
         name: &str,
-        strings: &StringPool,
+        strings: &StringPoolHandler,
     ) -> Option<&'a mut ResXMLTreeAttribute> {
         self.element
             .attributes
@@ -505,7 +561,7 @@ impl XMLTreeNode {
         &mut self,
         name: &str,
         value: ResValue,
-        strings: &StringPool,
+        strings: &StringPoolHandler,
     ) -> Option<&mut ResXMLTreeAttribute> {
         let attr = self
             .element
@@ -535,7 +591,7 @@ impl TryFrom<RawXMLTree> for XMLTree {
         for chunk in value.chunks {
             match chunk.data {
                 ResTypeValue::StringPool(sp) => string_pool = Some(sp),
-                ResTypeValue::StartElement(start_element) => {
+                ResTypeValue::XMLStartElement(start_element) => {
                     let el = XMLTreeNode {
                         namespace: namespace_stack.last().copied(),
                         element: start_element,
@@ -543,7 +599,7 @@ impl TryFrom<RawXMLTree> for XMLTree {
                     };
                     stack.push(el);
                 }
-                ResTypeValue::EndElement(_) => {
+                ResTypeValue::XMLEndElement(_) => {
                     let el = stack.pop().ok_or(XMLTreeParseError::TooManyEndElements)?;
                     if let Some(parent) = stack.last_mut() {
                         parent.children.push(el)
@@ -554,13 +610,13 @@ impl TryFrom<RawXMLTree> for XMLTree {
                         root = Some(el);
                     }
                 }
-                ResTypeValue::StartNameSpace(start_namespace) => {
+                ResTypeValue::XMLStartNameSpace(start_namespace) => {
                     namespace_stack.push(XMLNameSpace {
                         prefix: start_namespace.prefix,
                         uri: start_namespace.uri,
                     })
                 }
-                ResTypeValue::EndNameSpace(_) => {
+                ResTypeValue::XMLEndNameSpace(_) => {
                     _ = namespace_stack
                         .pop()
                         .ok_or(XMLTreeParseError::TooManyEndNamespaces)?
@@ -579,7 +635,7 @@ impl TryFrom<RawXMLTree> for XMLTree {
         }
 
         Ok(Self {
-            string_pool: string_pool.ok_or(XMLTreeParseError::NoStringPool)?,
+            string_pool: string_pool.ok_or(XMLTreeParseError::NoStringPool)?.into(),
             resource_map,
             root: root.ok_or(XMLTreeParseError::NoRoot)?,
         })

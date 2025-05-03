@@ -6,16 +6,15 @@ use std::{
 };
 
 use binrw::{binread, binrw, BinRead, BinResult, BinWrite, VecArgs};
-use thiserror::Error;
 
 use crate::{
     align,
     defs::{
-        parse_chunks, ResChunk, ResChunkWriteRef, ResTableRef, ResType, ResTypeValue,
-        ResTypeValueWriteRef,
+        parse_chunks, HeaderSizeInstance, HeaderSizeStatic, ResChunk, ResChunkWriteRef,
+        ResTableRef, ResType, ResTypeValue, ResTypeValueWriteRef,
     },
     res_value::ResValue,
-    string_pool::{ResStringPoolRef, StringPool},
+    string_pool::{ResStringPoolRef, StringPoolHandler},
 };
 
 /// A specification of the resources defined by a particular type.
@@ -50,9 +49,9 @@ pub struct ResTableTypeSpec {
     pub config_masks: Vec<u32>,
 }
 
-impl ResTableTypeSpec {
-    pub fn get_header_size() -> usize {
-        0x10
+impl HeaderSizeStatic for ResTableTypeSpec {
+    fn header_size() -> usize {
+        8
     }
 }
 
@@ -420,11 +419,13 @@ fn write_res_table_entries(data: &Vec<(usize, Option<ResTableEntry>)>) -> binrw:
     Ok(())
 }
 
-impl ResTableType {
-    pub fn get_header_size(&self) -> usize {
-        calc_entry_indicies(&self.config) as usize
+impl HeaderSizeInstance for ResTableType {
+    fn header_size(&self) -> usize {
+        1 + 1 + 2 + 4 + 4 + self.config.get_size()
     }
+}
 
+impl ResTableType {
     pub fn get_entry(&self, id: usize) -> Option<&ResTableEntry> {
         if !self.flags.sparse() {
             let entry = self.entries.get(id)?;
@@ -464,12 +465,26 @@ impl ResTableType {
     }
 }
 
-#[derive(Debug, Error)]
+#[derive(Debug)]
 pub enum InvalidEntry {
-    #[error("invalid entry, expected entry id {expected_id}, got {got_id}")]
     InvalidID { expected_id: usize, got_id: usize },
-    #[error("invalid entry, entry cannot be None")]
     InvalidEntry,
+}
+
+impl Display for InvalidEntry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidID {
+                expected_id,
+                got_id,
+            } => write!(
+                f,
+                "invalid entry, expected entry id {}, got {}",
+                expected_id, got_id
+            ),
+            Self::InvalidEntry => write!(f, "invalid entry, entry cannot be None"),
+        }
+    }
 }
 
 fn calculate_entry_indicies(
@@ -487,7 +502,7 @@ fn calculate_entry_indicies(
                 }
                 let size = (entry.as_ref())
                     .ok_or(InvalidEntry::InvalidEntry)?
-                    .get_full_size();
+                    .get_size();
                 indicies.push(ResTableSparseTypeEntry {
                     idx: (*id) as u16,
                     offset: pos as u16,
@@ -508,7 +523,7 @@ fn calculate_entry_indicies(
                 }
                 if let Some(entry) = entry {
                     indicies.push(pos as u32);
-                    pos += entry.get_full_size();
+                    pos += entry.get_size();
                 } else {
                     indicies.push(0xffffffff);
                 }
@@ -593,8 +608,8 @@ impl ResTableEntryFlags {
 pub struct ResTableEntry {
     /// Number of bytes in this structure
     #[br(temp)]
-    #[bw(calc=self.get_size() as u16)]
-    _size: u16,
+    #[bw(calc=self.header_size() as u16)]
+    _header_size: u16,
     flags: ResTableEntryFlags,
 
     #[br(parse_with=parse_table_entry_data, args(flags))]
@@ -605,13 +620,15 @@ pub struct ResTableEntry {
     pub data: ResTableEntryValue,
 }
 
+impl HeaderSizeInstance for ResTableEntry {
+    fn header_size(&self) -> usize {
+        4 + self.data.header_size()
+    }
+}
+
 impl ResTableEntry {
     pub fn get_size(&self) -> usize {
-        self.data.get_size()
-    }
-
-    pub fn get_full_size(&self) -> usize {
-        2 + 2 + self.data.get_full_size()
+        4 + self.data.get_size()
     }
 }
 
@@ -620,6 +637,16 @@ pub enum ResTableEntryValue {
     ResValue(ResTableResValueEntry),
     Map(ResTableMapEntry),
     Compact(u32),
+}
+
+impl HeaderSizeInstance for ResTableEntryValue {
+    fn header_size(&self) -> usize {
+        match self {
+            ResTableEntryValue::Compact(_) => 0,
+            ResTableEntryValue::ResValue(_) => 4,
+            ResTableEntryValue::Map(_) => 12,
+        }
+    }
 }
 
 impl ResTableEntryValue {
@@ -632,14 +659,6 @@ impl ResTableEntryValue {
     }
 
     pub fn get_size(&self) -> usize {
-        match self {
-            ResTableEntryValue::Map(_) => 0x10,
-            ResTableEntryValue::Compact(_) => 0x4,
-            ResTableEntryValue::ResValue(_) => 0x8,
-        }
-    }
-
-    pub fn get_full_size(&self) -> usize {
         match self {
             ResTableEntryValue::ResValue(r) => r.get_size(),
             ResTableEntryValue::Map(m) => m.get_size(),
@@ -834,7 +853,7 @@ pub struct ResTablePackage {
     pub id: u32,
 
     /// Actual name of this package, null terminated
-    #[br(parse_with=parse_name_string)]
+    #[br(parse_with=read_utf16_fixed_null_string, args(128))]
     pub name: String,
 
     /// Offset to a ResStringPool_header defining the resource type symbol table. If zero, this
@@ -857,21 +876,23 @@ pub struct ResTablePackage {
 
     #[br(parse_with=parse_string_pool, seek_before=std::io::SeekFrom::Start(header_offset + type_strings as u64))]
     #[br(if(type_strings != 0))]
-    pub string_pool_type: StringPool,
+    pub string_pool_type: StringPoolHandler,
 
     #[br(parse_with=parse_string_pool, seek_before=std::io::SeekFrom::Start(header_offset + key_strings as u64))]
     #[br(if(key_strings != 0))]
-    pub string_pool_key: StringPool,
+    pub string_pool_key: StringPoolHandler,
 
     #[br(parse_with=parse_chunks, args(((size as u64)-(s.stream_position()? - (header_offset as u64))) as u32))]
     pub chunks: Vec<ResChunk>,
 }
 
-impl ResTablePackage {
-    pub fn get_header_size() -> usize {
-        0x120
+impl HeaderSizeStatic for ResTablePackage {
+    fn header_size() -> usize {
+        280
     }
+}
 
+impl ResTablePackage {
     pub fn resolve_ref(&self, reference: ResTableRef) -> Option<&ResTableEntry> {
         for chunk in &self.chunks {
             if let ResTypeValue::TableType(table_type) = &chunk.data {
@@ -909,7 +930,7 @@ impl BinWrite for ResTablePackage {
         let header_offset = ResChunk::get_header_offset(writer.stream_position()?);
         self.id.write_options(writer, endian, ())?;
 
-        write_name_string(&self.name, writer, endian, ())?;
+        write_utf16_fixed_null_string(&self.name, writer, endian, (128,))?;
 
         let type_strings_pos_pos = writer.stream_position()?;
 
@@ -973,11 +994,11 @@ impl Display for InvalidStringPoolResType {
 }
 
 #[binrw::parser(reader, endian)]
-fn parse_string_pool() -> binrw::BinResult<StringPool> {
+fn parse_string_pool() -> binrw::BinResult<StringPoolHandler> {
     let chunk = ResChunk::read_options(reader, endian, ())?;
 
     if let ResTypeValue::StringPool(sp) = chunk.data {
-        return Ok(sp);
+        return Ok(sp.into());
     }
 
     Err(binrw::Error::Custom {
@@ -987,19 +1008,19 @@ fn parse_string_pool() -> binrw::BinResult<StringPool> {
 }
 
 #[binrw::writer(writer, endian)]
-fn write_string_pool(string_pool: &StringPool) -> binrw::BinResult<()> {
+fn write_string_pool(string_pool: &StringPoolHandler) -> binrw::BinResult<()> {
     let chunk = ResChunkWriteRef {
-        data: ResTypeValueWriteRef::StringPool(string_pool),
+        data: ResTypeValueWriteRef::StringPool(&string_pool.string_pool),
     };
     chunk.write_options(writer, endian, ())
 }
 
 #[binrw::parser(reader, endian)]
-fn parse_name_string() -> binrw::BinResult<String> {
+fn read_utf16_fixed_null_string(length: usize) -> binrw::BinResult<String> {
     let mut data: Vec<u16> = Vec::new();
     let start = reader.stream_position()?;
-    let end = start + 256;
-    for _ in 0..128 {
+    let end = start + (length as u64) * 2;
+    for _ in 0..length {
         let val = <u16>::read_options(reader, endian, ())?;
         if val == 0 {
             reader.seek(std::io::SeekFrom::Start(end))?;
@@ -1028,15 +1049,15 @@ impl Display for PackageNameError {
 }
 
 #[binrw::writer(writer, endian)]
-fn write_name_string(string: &str) -> binrw::BinResult<()> {
+fn write_utf16_fixed_null_string(string: &str, length: usize) -> binrw::BinResult<()> {
     let mut data: Vec<u16> = string.encode_utf16().collect();
-    if data.len() >= 128 {
+    if data.len() >= length {
         return Err(binrw::Error::Custom {
             pos: writer.stream_position()?,
             err: Box::new(PackageNameError(data.len())),
         });
     }
-    data.resize(128, 0);
+    data.resize(length, 0);
     for val in data {
         val.write_options(writer, endian, ())?;
     }
@@ -1065,7 +1086,7 @@ pub struct ResTable {
 
     #[br(parse_with=parse_string_pool)]
     #[bw(write_with=write_string_pool)]
-    pub string_pool: StringPool,
+    pub string_pool: StringPoolHandler,
 
     #[br(args(package_count))]
     pub packages: Packages,
@@ -1107,11 +1128,13 @@ impl Packages {
     }
 }
 
-impl ResTable {
-    pub fn get_header_size() -> usize {
-        0xc
+impl HeaderSizeStatic for ResTable {
+    fn header_size() -> usize {
+        4
     }
+}
 
+impl ResTable {
     pub fn read<R: Seek + Read>(reader: &mut R) -> Result<Self, ReadARSCError> {
         let header = ResChunk::read_le(reader).map_err(ReadARSCError::ReadError)?;
 
@@ -1130,17 +1153,29 @@ impl ResTable {
     }
 }
 
-#[derive(Debug, Error)]
+#[derive(Debug)]
 pub enum ReadARSCError {
-    #[error("an error occured while reading the arsc {0}")]
     ReadError(binrw::Error),
-    #[error("invalid type {0} expected table")]
     InvalidType(ResType),
 }
 
-#[derive(Debug, Error)]
-#[error("{0}")]
+impl Display for ReadARSCError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ReadError(e) => write!(f, "failed to read the resource table: {}", e),
+            Self::InvalidType(t) => write!(f, "invalid type {}, expected resource table", t),
+        }
+    }
+}
+
+#[derive(Debug)]
 pub struct WriteARSCError(pub binrw::Error);
+
+impl Display for WriteARSCError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
 
 impl From<binrw::Error> for WriteARSCError {
     fn from(value: binrw::Error) -> Self {
@@ -1167,5 +1202,162 @@ impl TryFrom<&ResTable> for Vec<u8> {
         value.write(&mut stream)?;
 
         Ok(stream.into_inner())
+    }
+}
+
+/// A package-id to package name mapping for any shared libraries used in this resource table. The
+/// package-id's encoded in this resource table may be different that the id's assigned at runtime.
+/// We must be able to translate the package-id's based on the package name.
+#[binrw]
+#[derive(Debug, PartialEq, Clone)]
+pub struct ResTableLib {
+    /// The number of shared libraries linked in this resource table.
+    #[br(temp)]
+    #[bw(calc=entries.len() as u32)]
+    count: u32,
+
+    #[br(count=count)]
+    pub entries: Vec<ResTableLibEntry>,
+}
+
+impl HeaderSizeStatic for ResTableLib {
+    fn header_size() -> usize {
+        4
+    }
+}
+
+/// A shared library package-id to package name entry.
+#[derive(Debug, PartialEq, Clone, BinRead, BinWrite)]
+pub struct ResTableLibEntry {
+    /// The package-id of this shared library was assigned at build time.
+    /// We use a u32 to keep the structure aligned on a u32 boundary.
+    pub package_id: u32,
+
+    /// The package name of the shared library, \0 terminated
+    #[br(parse_with=read_utf16_fixed_null_string, args(128))]
+    #[bw(write_with=|s, w, e, _: ()| write_utf16_fixed_null_string(s, w, e, (128,)))]
+    pub package_name: String,
+}
+
+/// A map that allows rewriting staged (non-finalized) resource ids to their finalized counterparts
+#[binrw]
+#[derive(Debug, PartialEq, Clone)]
+pub struct ResTableStagedAlias {
+    /// The number of ResTableStagedAliasEntrys that follow this header.
+    #[br(temp)]
+    #[bw(calc=entries.len() as u32)]
+    count: u32,
+
+    #[br(count=count)]
+    pub entries: Vec<ResTableStagedAliasEntry>,
+}
+
+impl HeaderSizeStatic for ResTableStagedAlias {
+    fn header_size() -> usize {
+        4
+    }
+}
+
+/// Maps the staged (non-finalized) resource id to its finalized resource id.
+#[derive(Debug, PartialEq, Clone, Copy, BinRead, BinWrite)]
+pub struct ResTableStagedAliasEntry {
+    /// The compile-time staged resource id to rewrite.
+    pub staged_res_id: u32,
+
+    /// The compile-time finalized resource id to which the staged resource id should be rewritten.
+    pub finalized_res_id: u32,
+}
+
+/// Specifies the set of resources that are explicitly allowed to be overlaid by RROs.
+#[derive(Debug, BinRead, BinWrite, Clone, PartialEq)]
+pub struct ResTableOverlayable {
+    /// The name of the overlayable set of resources that overlays target.
+    #[br(parse_with=read_utf16_fixed_null_string, args(256))]
+    #[bw(write_with=|s,w,e,_: ()| write_utf16_fixed_null_string(s,w,e, (256,)))]
+    pub name: String,
+
+    /// The component responsible for enabling and disabling overlays targeting this chunk.
+    #[br(parse_with=read_utf16_fixed_null_string, args(256))]
+    #[bw(write_with=|s,w,e,_: ()| write_utf16_fixed_null_string(s,w,e, (256,)))]
+    pub actor: String,
+}
+
+impl HeaderSizeStatic for ResTableOverlayable {
+    fn header_size() -> usize {
+        1024
+    }
+}
+
+/// Flags for a bitmask for all possible overlayable policy options.
+#[derive(Debug, Copy, Clone, BinRead, BinWrite, PartialEq)]
+pub struct PolicyFlags {
+    pub flags: u32,
+}
+
+impl PolicyFlags {
+    /// Any overlay can overlay these resources.
+    pub fn public(&self) -> bool {
+        self.flags & 1 != 0
+    }
+    /// The overlay must reside of the system partition or must have existed on the system
+    /// partition before an upgrade to overlay these resources.
+    pub fn system_partition(&self) -> bool {
+        self.flags & 2 != 0
+    }
+    /// The overlay must reside of the vendor parition or must have existed on the vendor partition
+    /// before an upgrade to overlay these resources.
+    pub fn vendor_partition(&self) -> bool {
+        self.flags & 4 != 0
+    }
+    /// The overlay must reside of the product partition or must have existed on the product
+    /// partition before an upgrade to overlay these resources.
+    pub fn product_partition(&self) -> bool {
+        self.flags & 8 != 0
+    }
+    /// The overlay must be signed with the same signature as the package containing the target
+    /// resource.
+    pub fn signature(&self) -> bool {
+        self.flags & 0x10 != 0
+    }
+    /// The overlay must reside of the odm partition or must have existed on the odm partition
+    /// before an upgrade to overlay these resources.
+    pub fn odm_parition(&self) -> bool {
+        self.flags & 0x20 != 0
+    }
+    /// The overlay must reside of the oem partition or must have existed on the oem partition
+    /// before an upgrade to overlay these resources.
+    pub fn oem_partition(&self) -> bool {
+        self.flags & 0x40 != 0
+    }
+    /// The overlay must be signed with the same signature as the actor declared for the target
+    /// resource.
+    pub fn actor_signature(&self) -> bool {
+        self.flags & 0x80 != 0
+    }
+    /// The overlay must be signed with the same signature as the reference package declared in the
+    /// SystemConfig
+    pub fn config_signature(&self) -> bool {
+        self.flags & 0x100 != 0
+    }
+}
+
+/// Holds a list of resource ids that are protected from being overlaid by a set of policies. If
+/// the overlay fulfils at least one of the policies, then the overlay can overlay the list of
+/// resources.
+#[binrw]
+#[derive(Debug, Clone, PartialEq)]
+pub struct ResTableOverlayablePolicy {
+    pub policy_flags: PolicyFlags,
+    /// The number of ResTable_ref that follow this header
+    #[br(temp)]
+    #[bw(calc=entries.len() as u32)]
+    entry_count: u32,
+    #[br(count=entry_count)]
+    entries: Vec<ResTableRef>,
+}
+
+impl HeaderSizeStatic for ResTableOverlayablePolicy {
+    fn header_size() -> usize {
+        8
     }
 }
