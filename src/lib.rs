@@ -1,5 +1,6 @@
 pub mod defs;
 pub mod res_value;
+pub mod stream;
 #[allow(clippy::unit_arg)]
 pub mod string_pool;
 #[allow(clippy::int_plus_one)]

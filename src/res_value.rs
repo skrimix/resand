@@ -1,29 +1,65 @@
 use std::{fmt::Display, str::FromStr};
 
-use binrw::{binrw, BinRead, BinWrite};
-
 use crate::{
     defs::ResTableRef,
+    stream::{
+        NewResultCtx, Readable, ReadableNoOptions, StreamError, StreamResult, Writeable,
+        WriteableNoOptions,
+    },
     string_pool::{ResStringPoolRef, StringPoolHandler},
 };
 
-#[binrw]
 #[derive(Debug, PartialEq, Clone, Copy)]
 pub struct ResValue {
-    /// Number of bytes in this structure.
-    #[br(temp)]
-    #[bw(calc = 8)]
-    #[br(assert(size==8))]
-    size: u16,
-
-    /// Always set to 0. Reserved
-    #[br(temp)]
-    #[bw(calc = 0)]
-    #[br(assert(res0==0))]
-    res0: u8,
-
     /// The data for this item
     pub data: ResValueType,
+}
+
+impl Readable for ResValue {
+    type Args = ();
+    fn read<R: std::io::Read + std::io::Seek>(
+        reader: &mut R,
+        _args: Self::Args,
+    ) -> StreamResult<Self> {
+        let size = u16::read_no_opts(reader).add_context(|| "read size for ResValue")?;
+        if size != 8 {
+            return Err(StreamError::new_string_context(
+                format!("invalid size {}, expected 8", size),
+                reader.stream_position()?,
+                "validate size for ResValue",
+            ));
+        }
+        let res0 = u8::read_no_opts(reader).add_context(|| "read res0 for ResValue")?;
+        if res0 != 0 {
+            return Err(StreamError::new_string_context(
+                format!("invalid res0 {}, expected 0", res0),
+                reader.stream_position()?,
+                "validate res0 for ResValue",
+            ));
+        }
+        Ok(Self {
+            data: ResValueType::read_no_opts(reader).add_context(|| "read data for ResValue")?,
+        })
+    }
+}
+
+impl Writeable for ResValue {
+    type Args = ();
+    fn write<W: std::io::Write + std::io::Seek>(
+        self,
+        writer: &mut W,
+        _args: Self::Args,
+    ) -> StreamResult<()> {
+        let size: u16 = 8;
+        size.write_no_opts(writer)
+            .add_context(|| "write size for ResValue")?;
+        let res0: u8 = 0;
+        res0.write_no_opts(writer)
+            .add_context(|| "write res0 for ResValue")?;
+        self.data
+            .write_no_opts(writer)
+            .add_context(|| "write data for ResValue")
+    }
 }
 
 impl ResValue {
@@ -40,22 +76,96 @@ impl ResValue {
     }
 }
 
-#[derive(Debug, BinRead, BinWrite, PartialEq, Copy, Clone)]
+#[derive(Debug, PartialEq, Copy, Clone)]
 pub enum ResTypeNullType {
-    #[brw(magic(0u32))]
     Undefined,
-    #[brw(magic(1u32))]
     Empty,
 }
 
-#[derive(Debug, BinRead, BinWrite, PartialEq, Copy, Clone)]
+impl Readable for ResTypeNullType {
+    type Args = ();
+    fn read<R: std::io::Read + std::io::Seek>(
+        reader: &mut R,
+        _args: Self::Args,
+    ) -> StreamResult<Self> {
+        let res_type =
+            u32::read_no_opts(reader).add_context(|| "read value id for ResTypeNullType")?;
+        Ok(match res_type {
+            0 => Self::Undefined,
+            1 => Self::Empty,
+            v => {
+                return Err(StreamError::new_string_context(
+                    format!("invalid null value: {}, expected 0 or 1", v),
+                    reader.stream_position()?,
+                    "read ResTypeNullType",
+                ))
+            }
+        })
+    }
+}
+
+impl Writeable for ResTypeNullType {
+    type Args = ();
+    fn write<W: std::io::Write + std::io::Seek>(
+        self,
+        writer: &mut W,
+        _args: Self::Args,
+    ) -> StreamResult<()> {
+        let res_type: u32 = match self {
+            Self::Undefined => 0,
+            Self::Empty => 1,
+        };
+        res_type
+            .write_no_opts(writer)
+            .add_context(|| "write ResTypeNullType value")
+    }
+}
+
+#[derive(Debug, PartialEq, Copy, Clone)]
 pub enum ResTypeBoolType {
-    #[brw(magic(0u32))]
     False,
-    #[brw(magic(1u32))]
     True,
-    #[brw(magic(0xffffffffu32))]
     Null,
+}
+
+impl Readable for ResTypeBoolType {
+    type Args = ();
+    fn read<R: std::io::Read + std::io::Seek>(
+        reader: &mut R,
+        _args: Self::Args,
+    ) -> StreamResult<Self> {
+        let bool_type = u32::read_no_opts(reader)?;
+        Ok(match bool_type {
+            0 => Self::False,
+            1 => Self::True,
+            0xffffffff => Self::Null,
+            v => {
+                return Err(StreamError::new_string_context(
+                    format!("invalid bool type {}, expected 0, 1 or 0xffffffff", v),
+                    reader.stream_position()?,
+                    "read ResTypeBoolType",
+                ))
+            }
+        })
+    }
+}
+
+impl Writeable for ResTypeBoolType {
+    type Args = ();
+    fn write<W: std::io::Write + std::io::Seek>(
+        self,
+        writer: &mut W,
+        _args: Self::Args,
+    ) -> StreamResult<()> {
+        let bool_type: u32 = match self {
+            Self::False => 0,
+            Self::True => 1,
+            Self::Null => 0xffffffff,
+        };
+        bool_type
+            .write_no_opts(writer)
+            .add_context(|| "write ResTypeBoolType")
+    }
 }
 
 impl Display for ResTypeBoolType {
@@ -88,9 +198,34 @@ impl FromStr for ResTypeBoolType {
     }
 }
 
-#[derive(Debug, BinRead, BinWrite, PartialEq, Copy, Clone)]
+#[derive(Debug, PartialEq, Copy, Clone)]
 pub struct ARGB8 {
     pub aarrggbb: u32,
+}
+
+impl Readable for ARGB8 {
+    type Args = ();
+    fn read<R: std::io::Read + std::io::Seek>(
+        reader: &mut R,
+        _args: Self::Args,
+    ) -> StreamResult<Self> {
+        Ok(Self {
+            aarrggbb: u32::read_no_opts(reader).add_context(|| "read ARGB8")?,
+        })
+    }
+}
+
+impl Writeable for ARGB8 {
+    type Args = ();
+    fn write<W: std::io::Write + std::io::Seek>(
+        self,
+        writer: &mut W,
+        _args: Self::Args,
+    ) -> StreamResult<()> {
+        self.aarrggbb
+            .write_no_opts(writer)
+            .add_context(|| "write ARGB8")
+    }
 }
 
 impl ARGB8 {
@@ -113,9 +248,34 @@ impl ARGB8 {
     }
 }
 
-#[derive(Debug, BinRead, BinWrite, PartialEq, Copy, Clone)]
+#[derive(Debug, PartialEq, Copy, Clone)]
 pub struct RGB8 {
     pub rrggbb: u32,
+}
+
+impl Readable for RGB8 {
+    type Args = ();
+    fn read<R: std::io::Read + std::io::Seek>(
+        reader: &mut R,
+        _args: Self::Args,
+    ) -> StreamResult<Self> {
+        Ok(Self {
+            rrggbb: u32::read_no_opts(reader).add_context(|| "read RGB8")?,
+        })
+    }
+}
+
+impl Writeable for RGB8 {
+    type Args = ();
+    fn write<W: std::io::Write + std::io::Seek>(
+        self,
+        writer: &mut W,
+        _args: Self::Args,
+    ) -> StreamResult<()> {
+        self.rrggbb
+            .write_no_opts(writer)
+            .add_context(|| "read RGB8")
+    }
 }
 
 impl RGB8 {
@@ -135,9 +295,34 @@ impl RGB8 {
         (self.rrggbb) as u8
     }
 }
-#[derive(Debug, BinRead, BinWrite, PartialEq, Copy, Clone)]
+#[derive(Debug, PartialEq, Copy, Clone)]
 pub struct ARGB4 {
     pub argb: u32,
+}
+
+impl Readable for ARGB4 {
+    type Args = ();
+    fn read<R: std::io::Read + std::io::Seek>(
+        reader: &mut R,
+        _args: Self::Args,
+    ) -> StreamResult<Self> {
+        Ok(Self {
+            argb: u32::read_no_opts(reader).add_context(|| "read ARGB4")?,
+        })
+    }
+}
+
+impl Writeable for ARGB4 {
+    type Args = ();
+    fn write<W: std::io::Write + std::io::Seek>(
+        self,
+        writer: &mut W,
+        _args: Self::Args,
+    ) -> StreamResult<()> {
+        self.argb
+            .write_no_opts(writer)
+            .add_context(|| "write ARGB4")
+    }
 }
 
 impl ARGB4 {
@@ -161,9 +346,32 @@ impl ARGB4 {
     }
 }
 
-#[derive(Debug, BinRead, BinWrite, PartialEq, Clone, Copy)]
+#[derive(Debug, PartialEq, Clone, Copy)]
 pub struct RGB4 {
     pub rgb: u32,
+}
+
+impl Readable for RGB4 {
+    type Args = ();
+    fn read<R: std::io::Read + std::io::Seek>(
+        reader: &mut R,
+        _args: Self::Args,
+    ) -> StreamResult<Self> {
+        Ok(Self {
+            rgb: u32::read_no_opts(reader).add_context(|| "read RGB4")?,
+        })
+    }
+}
+
+impl Writeable for RGB4 {
+    type Args = ();
+    fn write<W: std::io::Write + std::io::Seek>(
+        self,
+        writer: &mut W,
+        _args: Self::Args,
+    ) -> StreamResult<()> {
+        self.rgb.write_no_opts(writer).add_context(|| "write RGB4")
+    }
 }
 impl RGB4 {
     pub fn new(red: u32, green: u32, blue: u32) -> Self {
@@ -202,57 +410,176 @@ impl From<ResTypeBoolType> for bool {
     }
 }
 
-#[derive(Debug, BinRead, BinWrite, PartialEq, Copy, Clone)]
+#[derive(Debug, PartialEq, Copy, Clone)]
 pub enum ResValueType {
     /// The 'data' is either 0 or 1, specifying this resource is either undefined or empty,
     /// respectively.
-    #[brw(magic(0x00u8))]
     Null(ResTypeNullType),
     /// The 'data' holds a ResTable_ref, a reference to another resource table entry.
-    #[brw(magic(0x01u8))]
     Reference(ResTableRef),
     /// The 'data' holds an attribute resource identifier.
-    #[brw(magic(0x02u8))]
     Attribute(u32),
     /// The 'data' holds a ResStringPool_ref, a reference into the containing resource table's global value string pool.
-    #[brw(magic(0x03u8))]
     String(ResStringPoolRef),
     /// The 'data' holds a single-precision floating point number.
-    #[brw(magic(0x04u8))]
     Float(f32),
     /// The 'data' holds a complex number encoding a dimension value, such as "100in".
-    #[brw(magic(0x05u8))]
     Dimension(u32),
     /// The 'data' holds a complex number encoding a fraction of a container.
-    #[brw(magic(0x06u8))]
     Fraction(u32),
     /// The 'data' holds a dynamic ResTable_ref which needs to be resolved before it can be used
     /// like a TYPE_REFERENCE.
-    #[brw(magic(0x07u8))]
-    DyanmicReference(ResTableRef),
+    DynamicReference(ResTableRef),
     /// The 'data' holds an attribute resource identifier, which needs to be resolved before it can
     /// be used like a TYPE_ATTRIBUTE.
-    #[brw(magic(0x08u8))]
     DynamicAttribute(u32),
     /// The 'data' is a raw integer value of the form n..n.
-    #[brw(magic(0x010u8))]
     IntDec(u32),
     /// The 'data' is a raw integer value of the form 0xn..n.
-    #[brw(magic(0x11u8))]
     IntHex(u32),
     /// The 'data' is either 0 or 1, for input "false" or "true" respectively.
-    #[brw(magic(0x12u8))]
     IntBoolean(ResTypeBoolType),
     /// The 'data' is a raw integer value of the form #aarrggbb.
-    #[brw(magic(0x1cu8))]
     IntColorARGB8(ARGB8),
     /// The 'data' is a raw integer value of the form #rrggbb.
-    #[brw(magic(0x1du8))]
     IntColorRGB8(RGB8),
     /// The 'data' is a raw integer value of the form #argb.
-    #[brw(magic(0x1eu8))]
     IntColorARGB4(ARGB4),
     /// The 'data' is a raw integer value of the form #rgb.
-    #[brw(magic(0x1fu8))]
     IntColorRGB4(RGB4),
+}
+
+impl Readable for ResValueType {
+    type Args = ();
+
+    fn read<R: std::io::Read + std::io::Seek>(
+        reader: &mut R,
+        _args: Self::Args,
+    ) -> StreamResult<Self> {
+        let res_type =
+            u8::read_no_opts(reader).add_context(|| "read res_type id for ResValueType")?;
+        Ok(match res_type {
+            0x0 => ResValueType::Null(ResTypeNullType::read_no_opts(reader)?),
+            0x1 => ResValueType::Reference(ResTableRef::read_no_opts(reader)?),
+            0x2 => ResValueType::Attribute(
+                u32::read_no_opts(reader).add_context(|| "read attribute for ResValueType")?,
+            ),
+            0x3 => ResValueType::String(ResStringPoolRef::read_no_opts(reader)?),
+            0x4 => ResValueType::Float(
+                f32::read_no_opts(reader).add_context(|| "read float for ResValueType")?,
+            ),
+            0x5 => ResValueType::Dimension(
+                u32::read_no_opts(reader).add_context(|| "read dimension for ResValueType")?,
+            ),
+            0x6 => ResValueType::Fraction(
+                u32::read_no_opts(reader).add_context(|| "read fraction for ResValueType")?,
+            ),
+            0x7 => ResValueType::DynamicReference(ResTableRef::read_no_opts(reader)?),
+            0x8 => ResValueType::DynamicAttribute(
+                u32::read_no_opts(reader)
+                    .add_context(|| "read dynamic attribute for ResValueType")?,
+            ),
+            0x10 => ResValueType::IntDec(
+                u32::read_no_opts(reader).add_context(|| "read int dec for ResValueType")?,
+            ),
+            0x11 => ResValueType::IntHex(
+                u32::read_no_opts(reader).add_context(|| "read int hex for ResValueType")?,
+            ),
+            0x12 => ResValueType::IntBoolean(ResTypeBoolType::read_no_opts(reader)?),
+            0x1c => ResValueType::IntColorARGB8(ARGB8::read_no_opts(reader)?),
+            0x1d => ResValueType::IntColorRGB8(RGB8::read_no_opts(reader)?),
+            0x1e => ResValueType::IntColorARGB4(ARGB4::read_no_opts(reader)?),
+            0x1f => ResValueType::IntColorRGB4(RGB4::read_no_opts(reader)?),
+            v => {
+                return Err(StreamError::new_string_context(
+                    format!("invalid res_type {}", v),
+                    reader.stream_position()?,
+                    "match res_type for ResValueType",
+                ))
+            }
+        })
+    }
+}
+
+impl Writeable for ResValueType {
+    type Args = ();
+    fn write<W: std::io::Write + std::io::Seek>(
+        self,
+        writer: &mut W,
+        _args: Self::Args,
+    ) -> StreamResult<()> {
+        let pos = writer.stream_position()?;
+        writer.seek_relative(1)?;
+        let res_type: u8 = match self {
+            Self::Null(v) => {
+                v.write_no_opts(writer)?;
+                0
+            }
+            Self::Reference(v) => {
+                v.write_no_opts(writer)?;
+                0x1
+            }
+            Self::Attribute(v) => {
+                v.write_no_opts(writer)?;
+                0x2
+            }
+            Self::String(v) => {
+                v.write_no_opts(writer)?;
+                0x3
+            }
+            Self::Float(v) => {
+                v.write_no_opts(writer)?;
+                0x4
+            }
+            Self::Dimension(v) => {
+                v.write_no_opts(writer)?;
+                0x5
+            }
+            Self::Fraction(v) => {
+                v.write_no_opts(writer)?;
+                0x6
+            }
+            Self::DynamicReference(v) => {
+                v.write_no_opts(writer)?;
+                0x7
+            }
+            Self::DynamicAttribute(v) => {
+                v.write_no_opts(writer)?;
+                0x8
+            }
+            Self::IntDec(v) => {
+                v.write_no_opts(writer)?;
+                0x10
+            }
+            Self::IntHex(v) => {
+                v.write_no_opts(writer)?;
+                0x11
+            }
+            Self::IntBoolean(v) => {
+                v.write_no_opts(writer)?;
+                0x12
+            }
+            Self::IntColorARGB8(v) => {
+                v.write_no_opts(writer)?;
+                0x1c
+            }
+            Self::IntColorRGB8(v) => {
+                v.write_no_opts(writer)?;
+                0x1d
+            }
+            Self::IntColorARGB4(v) => {
+                v.write_no_opts(writer)?;
+                0x1e
+            }
+            Self::IntColorRGB4(v) => {
+                v.write_no_opts(writer)?;
+                0x1f
+            }
+        };
+        writer.seek(std::io::SeekFrom::Start(pos))?;
+        res_type
+            .write_no_opts(writer)
+            .add_context(|| "write res_type for ResValueType")?;
+        Ok(writer.seek_relative(4)?)
+    }
 }

@@ -5,15 +5,14 @@ use std::{
     io::{Cursor, Read, Seek, SeekFrom, Write},
 };
 
-use binrw::{binread, binrw, BinRead, BinResult, BinWrite, VecArgs};
-
 use crate::{
     align,
-    defs::{
-        parse_chunks, HeaderSizeInstance, HeaderSizeStatic, ResChunk, ResChunkWriteRef,
-        ResTableRef, ResType, ResTypeValue, ResTypeValueWriteRef,
-    },
+    defs::{HeaderSizeInstance, HeaderSizeStatic, ResChunk, ResTableRef, ResType, ResTypeValue},
     res_value::ResValue,
+    stream::{
+        NewResultCtx, Readable, ReadableNoOptions, StreamError, StreamResult, VecReadable,
+        VecWritable, Writeable, WriteableNoOptions,
+    },
     string_pool::{ResStringPoolRef, StringPoolHandler},
 };
 
@@ -24,29 +23,70 @@ use crate::{
 /// This structure is followed by an array of integers providing the set of configuration change
 /// flags (ResTable_config::CONFIG_*) that have multiple resources for that configuration. In
 /// addition, the high bi is set if that resource has been made public.
-#[binrw]
 #[derive(Debug, Clone, PartialEq)]
 pub struct ResTableTypeSpec {
     /// The type identifier this chunk is holding. Type IDs start at 1 (corresponding to the value
     /// of the type bits in a resource identifier). 0 is invalid.
     pub id: u8,
 
-    /// Must be 0.
-    #[br(assert(res0 == 0))]
-    #[br(temp)]
-    #[bw(calc = 0)]
-    res0: u8,
-
-    /// Used to be reserved, if >0 specifies the number of ResTable_type entries for this spec.
+    /// Used to be reserved, if >0 specifies the number of ResTable_type entries for this spec. TODO: this?
     pub types_count: u16,
 
-    /// Number of uint32_t entry configuration masks that follow.
-    #[br(temp)]
-    #[bw(calc=config_masks.len() as u32)]
-    entry_count: u32,
-
-    #[br(count=entry_count)]
     pub config_masks: Vec<u32>,
+}
+
+impl Readable for ResTableTypeSpec {
+    type Args = ();
+    fn read<R: Read + Seek>(reader: &mut R, _args: Self::Args) -> StreamResult<Self> {
+        let id = u8::read_no_opts(reader).add_context(|| "read id for ResTableTypeSpec")?;
+        let res0 = u8::read_no_opts(reader).add_context(|| "read res0 for ResTableTypeSpec")?;
+
+        if res0 != 0 {
+            return Err(StreamError::new_string_context(
+                format!("invalid res0 {}, expected 0", res0),
+                reader.stream_position()?,
+                "validate res0 for ResTableTypeSpec",
+            ));
+        }
+
+        let types_count =
+            u16::read_no_opts(reader).add_context(|| "read types_count for ResTableTypeSpec")?;
+        let entry_count =
+            u32::read_no_opts(reader).add_context(|| "read entry_count for ResTableTypeSpec")?;
+
+        let config_masks = <Vec<u32>>::read_vec(reader, entry_count as usize)
+            .add_context(|| "read config_masks for ResTableTypeSpec")?;
+
+        Ok(Self {
+            id,
+            types_count,
+            config_masks,
+        })
+    }
+}
+
+impl Writeable for ResTableTypeSpec {
+    type Args = ();
+    fn write<W: Write + Seek>(self, writer: &mut W, _args: Self::Args) -> StreamResult<()> {
+        self.id
+            .write_no_opts(writer)
+            .add_context(|| "write id for ResTableTypeSpec")?;
+        let res0: u8 = 0;
+        res0.write_no_opts(writer)
+            .add_context(|| "write res0 for ResTableTypeSpec")?;
+
+        self.types_count
+            .write_no_opts(writer)
+            .add_context(|| "write types_count for ResTableTypeSpec")?;
+        let entry_count: u32 = self.config_masks.len() as u32;
+        entry_count
+            .write_no_opts(writer)
+            .add_context(|| "write entry_count for ResTableTypeSpec")?;
+
+        self.config_masks
+            .write_vec(writer)
+            .add_context(|| "write config_masks for ResTableTypeSpec")
+    }
 }
 
 impl HeaderSizeStatic for ResTableTypeSpec {
@@ -55,138 +95,210 @@ impl HeaderSizeStatic for ResTableTypeSpec {
     }
 }
 
-#[derive(Debug, BinRead, BinWrite, PartialEq, Default, Copy, Clone)]
+#[derive(Debug, PartialEq, Default, Copy, Clone)]
 pub struct ResTableTypeFlags {
     pub flags: u8,
 }
 
-#[derive(Debug, BinWrite, BinRead, PartialEq, Clone, Copy)]
-pub enum Orientation {
-    #[brw(magic = 0x0000u8)]
-    Any,
-    #[brw(magic = 0x0001u8)]
-    Portrait,
-    #[brw(magic = 0x0002u8)]
-    Landscape,
-    #[brw(magic = 0x0003u8)]
-    Square,
-}
-
-#[derive(Debug, BinWrite, BinRead, PartialEq, Clone, Copy)]
-pub enum TouchScreen {
-    #[brw(magic = 0x0000u8)]
-    Any,
-    #[brw(magic = 0x0001u8)]
-    NoTouch,
-    #[brw(magic = 0x0002u8)]
-    Stylus,
-    #[brw(magic = 0x0003u8)]
-    Finger,
-}
-
-#[derive(Debug, BinWrite, BinRead, PartialEq, Clone, Copy)]
-pub enum Density {
-    #[brw(magic = 0u16)]
-    Default,
-    #[brw(magic = 120u16)]
-    Low,
-    #[brw(magic = 160u16)]
-    Medium,
-    #[brw(magic = 213u16)]
-    Tv,
-    #[brw(magic = 240u16)]
-    High,
-    #[brw(magic = 320u16)]
-    XHigh,
-    #[brw(magic = 480u16)]
-    XXHigh,
-    #[brw(magic = 640u16)]
-    XXXHigh,
-    #[brw(magic = 0xfffeu16)]
-    Any,
-    #[brw(magic = 0xffffu16)]
-    None,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, BinWrite, BinRead)]
-pub struct Imsi(u32);
-
-impl Imsi {
-    /// Mobile country code (from SIM). 0 means "any".
-    pub fn mcc(&self) -> u16 {
-        self.0 as u16
-    }
-
-    /// Mobile network code (from SIM). 0 means "any".
-    pub fn mnc(&self) -> u16 {
-        (self.0 >> 16) as u16
+impl Readable for ResTableTypeFlags {
+    type Args = ();
+    fn read<R: Read + Seek>(reader: &mut R, _args: Self::Args) -> StreamResult<Self> {
+        Ok(Self {
+            flags: u8::read_no_opts(reader).add_context(|| "read flags for ResTableTypeFlags")?,
+        })
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, BinWrite, BinRead)]
-pub struct ScreenType(u32);
+impl Writeable for ResTableTypeFlags {
+    type Args = ();
+    fn write<W: Write + Seek>(self, writer: &mut W, _args: Self::Args) -> StreamResult<()> {
+        self.flags
+            .write_no_opts(writer)
+            .add_context(|| "write flags for ResTableTypeFlags")
+    }
+}
 
-#[allow(clippy::int_plus_one)]
-#[binrw]
-#[brw(stream = s)]
 #[derive(Debug, PartialEq, Clone)]
 pub struct ResTableConfig {
-    #[brw(try_calc=s.stream_position())]
-    #[brw(restore_position)]
-    start_offset: u64,
-    /// Number of byte in this structure.
-    #[br(temp)]
-    #[bw(calc=self.get_size() as u32)]
-    size: u32,
-
-    #[br(if(size >= 4))]
-    pub imsi: Option<Imsi>,
-
-    /// TODO: impliment all of this
-    #[br(if(size >= 4 + 4))]
+    pub imsi: Option<u32>,
     pub locale: Option<u32>,
-
-    #[br(if(size >= 4 + 4 + 4))]
-    pub screen_type: Option<ScreenType>,
-
-    #[br(if(size >= 4 + 4 + 4 + 8))]
+    pub screen_type: Option<u32>,
     pub input: Option<u64>,
-
-    #[br(if(size >= 4 + 4 + 4 + 8 + 4))]
     pub screen_size: Option<u32>,
-
-    #[br(if(size >= 4 + 4 + 4 + 8 + 4 + 4))]
     pub version: Option<u32>,
-
-    #[br(if(size >= 4 + 4 + 4 + 8 + 4 + 4 + 4))]
     pub screen_config: Option<u32>,
-
-    #[br(if(size >= 4 + 4 + 4 + 8 + 4 + 4 + 4 + 4))]
     pub screen_size_dp: Option<u32>,
-
-    #[br(if(size >= 4 + 4 + 4 + 8 + 4 + 4 + 4 + 4 + 4))]
     pub locale_script: Option<FixedUTF8String<4>>,
-
-    #[br(if(size >= 4 + 4 + 4 + 8 + 4 + 4 + 4 + 4 + 4 + 8))]
     pub locale_variant: Option<FixedUTF8String<8>>,
-
-    #[br(if(size >= 4 + 4 + 4 + 8 + 4 + 4 + 4 + 4 + 4 + 8 + 4))]
     pub screen_config_2: Option<u32>,
-
-    #[bw(write_with=write_bool)]
-    #[br(parse_with=|reader, endian, ()| read_bool(reader, endian, (size >= 4 + 4 + 4 + 4 + 8 + 4 + 4 + 4 + 4 + 4 + 8 + 4 + 1,)))]
-    #[br(if(size >= 4 + 4 + 4 + 8 + 4 + 4 + 4 + 4 + 4 + 8 + 4 + 1))]
     pub locale_script_was_computed: Option<bool>,
-
-    #[br(if(size >= 4 + 4 + 4 + 8 + 4 + 4 + 4 + 4 + 4 + 8 + 4 + 1 + 8))]
     pub locale_numbering_system: Option<FixedUTF8String<8>>,
-
-    #[br(temp)]
-    #[bw(ignore)]
-    #[brw(seek_before=SeekFrom::Start(size as u64 + start_offset))]
-    _temp: (),
 }
 
+impl Writeable for ResTableConfig {
+    type Args = ();
+    fn write<W: Write + Seek>(self, writer: &mut W, _args: Self::Args) -> StreamResult<()> {
+        let size: u32 = self.get_size() as u32;
+        size.write_no_opts(writer)?;
+        let start_pos = writer.stream_position()?;
+        if let Some(imsi) = self.imsi {
+            imsi.write_no_opts(writer)?;
+        }
+        if let Some(locale) = self.locale {
+            locale.write_no_opts(writer)?;
+        }
+        if let Some(screen_type) = self.screen_type {
+            screen_type.write_no_opts(writer)?;
+        }
+        if let Some(input) = self.input {
+            input.write_no_opts(writer)?;
+        }
+        if let Some(screen_size) = self.screen_size {
+            screen_size.write_no_opts(writer)?;
+        }
+        if let Some(version) = self.version {
+            version.write_no_opts(writer)?;
+        }
+        if let Some(screen_config) = self.screen_config {
+            screen_config.write_no_opts(writer)?;
+        }
+        if let Some(screen_size_dp) = self.screen_size_dp {
+            screen_size_dp.write_no_opts(writer)?;
+        }
+        if let Some(locale_script) = self.locale_script {
+            locale_script.write_no_opts(writer)?;
+        }
+        if let Some(locale_variant) = self.locale_variant {
+            locale_variant.write_no_opts(writer)?;
+        }
+        if let Some(screen_config_2) = self.screen_config_2 {
+            screen_config_2.write_no_opts(writer)?;
+        }
+        if let Some(locale_script_was_computed) = self.locale_script_was_computed {
+            locale_script_was_computed.write_no_opts(writer)?;
+        }
+        if let Some(locale_numbering_system) = self.locale_numbering_system {
+            locale_numbering_system.write_no_opts(writer)?;
+        }
+
+        let current_pos = writer.stream_position()?;
+        let new_pos = align(current_pos, 4);
+
+        if new_pos > current_pos {
+            let to_pad = new_pos - current_pos;
+            let data = vec![0u8; to_pad as usize];
+            data.write_vec(writer)?;
+        }
+
+        assert_eq!(writer.stream_position()?, size as u64 + start_pos);
+
+        Ok(())
+    }
+}
+
+impl Readable for ResTableConfig {
+    type Args = ();
+    fn read<R: Read + Seek>(reader: &mut R, _args: Self::Args) -> StreamResult<Self> {
+        let size = u32::read_no_opts(reader)?;
+        let start_offset = reader.stream_position()?;
+
+        let imsi = if size >= 4 {
+            Some(u32::read_no_opts(reader)?)
+        } else {
+            None
+        };
+
+        let locale = if size >= 8 {
+            Some(u32::read_no_opts(reader)?)
+        } else {
+            None
+        };
+
+        let screen_type = if size >= 12 {
+            Some(u32::read_no_opts(reader)?)
+        } else {
+            None
+        };
+
+        let input = if size >= 20 {
+            Some(u64::read_no_opts(reader)?)
+        } else {
+            None
+        };
+
+        let screen_size = if size >= 24 {
+            Some(u32::read_no_opts(reader)?)
+        } else {
+            None
+        };
+
+        let version = if size >= 28 {
+            Some(u32::read_no_opts(reader)?)
+        } else {
+            None
+        };
+
+        let screen_config = if size >= 32 {
+            Some(u32::read_no_opts(reader)?)
+        } else {
+            None
+        };
+
+        let screen_size_dp = if size >= 36 {
+            Some(u32::read_no_opts(reader)?)
+        } else {
+            None
+        };
+
+        let locale_script = if size >= 40 {
+            Some(<FixedUTF8String<4>>::read_no_opts(reader)?)
+        } else {
+            None
+        };
+
+        let locale_variant = if size >= 48 {
+            Some(<FixedUTF8String<8>>::read_no_opts(reader)?)
+        } else {
+            None
+        };
+
+        let screen_config_2 = if size >= 42 {
+            Some(u32::read_no_opts(reader)?)
+        } else {
+            None
+        };
+
+        let locale_script_was_computed = if size >= 43 {
+            Some(bool::read_no_opts(reader)?)
+        } else {
+            None
+        };
+
+        let locale_numbering_system = if size >= 51 {
+            Some(<FixedUTF8String<8>>::read_no_opts(reader)?)
+        } else {
+            None
+        };
+
+        reader.seek(SeekFrom::Start(start_offset + size as u64))?;
+
+        Ok(Self {
+            imsi,
+            locale,
+            screen_type,
+            input,
+            screen_size,
+            version,
+            screen_config,
+            screen_size_dp,
+            locale_script,
+            locale_variant,
+            screen_config_2,
+            locale_script_was_computed,
+            locale_numbering_system,
+        })
+    }
+}
 impl ResTableConfig {
     pub fn get_size(&self) -> usize {
         let mut size = 0;
@@ -275,33 +387,28 @@ impl ResTableConfig {
     }
 }
 
-#[binrw::writer(writer, endian)]
-pub fn write_bool(val: &Option<bool>, _args: ()) -> BinResult<()> {
-    if let Some(val) = val {
-        let val: u8 = (*val).into();
-
-        return val.write_options(writer, endian, ());
-    }
-    Ok(())
-}
-
-#[binrw::parser(reader, endian)]
-pub fn read_bool(should_read: bool) -> BinResult<Option<bool>> {
-    if !should_read {
-        return Ok(None);
-    }
-    let val: u8 = <u8>::read_options(reader, endian, ())?;
-
-    if val == 0 {
-        return Ok(Some(false));
-    }
-    Ok(Some(true))
-}
-
-#[derive(Debug, Clone, BinRead, BinWrite, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct FixedUTF8String<const N: usize> {
-    #[br(count=N)]
     data: Vec<u8>,
+}
+
+impl<const N: usize> Readable for FixedUTF8String<N> {
+    type Args = ();
+    fn read<R: Read + Seek>(reader: &mut R, _args: Self::Args) -> StreamResult<Self> {
+        Ok(Self {
+            data: <Vec<u8>>::read_vec(reader, N)
+                .add_context(|| format!("read data for FixedUTF8String<{}>", N))?,
+        })
+    }
+}
+
+impl<const N: usize> Writeable for FixedUTF8String<N> {
+    type Args = ();
+    fn write<W: Write + Seek>(self, writer: &mut W, _args: Self::Args) -> StreamResult<()> {
+        self.data
+            .write_vec(writer)
+            .add_context(|| format!("write data for FixedUTF8String<{}>", N))
+    }
 }
 
 impl<const N: usize> Display for FixedUTF8String<N> {
@@ -318,7 +425,7 @@ pub struct InvalidLength {
 
 impl<const N: usize> TryFrom<String> for FixedUTF8String<N> {
     type Error = InvalidLength;
-    fn try_from(value: String) -> Result<Self, Self::Error> {
+    fn try_from(value: String) -> Result<Self, InvalidLength> {
         if value.len() != N {
             return Err(InvalidLength {
                 expected: N,
@@ -363,60 +470,127 @@ impl ResTableTypeFlags {
 ///
 /// There may be multiple of these chunks for a particular resource type, supply different
 /// configuration variations for the resource values of that type.
-#[binrw]
-#[brw(stream = s)]
-#[br(import(header_size: u16))]
 #[derive(Debug, PartialEq, Clone)]
 pub struct ResTableType {
-    #[brw(try_calc=Ok::<u64, binrw::Error>(ResChunk::get_header_offset(s.stream_position()?)))]
-    #[brw(restore_position)]
-    header_offset: u64,
     /// The type identifier this chunk is holding. Type IDs start at 1 (corresponding the the value
     /// of the type bits in a resource identifier). 0 is invalid.
     pub id: u8,
-
     pub flags: ResTableTypeFlags,
-
-    /// Must be 0.
-    #[br(temp)]
-    #[bw(calc = 0)]
-    #[br(assert(reserved == 0))]
-    reserved: u16,
-
-    /// Number of uint32_t entry indicies that follow.
-    #[br(temp)]
-    #[bw(calc=entries.len() as u32)]
-    entry_count: u32,
-
-    /// Offset from header where ResTable_entry data starts.
-    #[br(temp)]
-    #[bw(calc=calc_entries_start(config, entries.len()))]
-    entries_start: u32,
 
     /// Configuration this collection of entries is designed for. This must always be last.
     pub config: ResTableConfig,
-
-    #[br(parse_with=ResTableTypeEntryIndicies::parse, args(entry_count, flags.sparse()), seek_before=std::io::SeekFrom::Start(header_offset + header_size as u64))]
-    #[br(temp)]
-    #[bw(try_calc=calculate_entry_indicies(entries, flags.sparse()))]
-    // #[bw(write_with=ResTableTypeEntryIndicies::write, assert(self.entry_indicies.is_sparse() == self.flags.sparse()))]
-    entry_indicies: ResTableTypeEntryIndicies,
-
-    #[br(seek_before=std::io::SeekFrom::Start(header_offset + entries_start as u64))]
-    #[bw(seek_before=std::io::SeekFrom::Start(header_offset + entries_start as u64))]
-    #[br(parse_with=parse_res_table_entries, args(&entry_indicies))]
-    #[bw(write_with=write_res_table_entries)]
     pub entries: Vec<(usize, Option<ResTableEntry>)>,
 }
 
-#[binrw::writer(writer, endian)]
-fn write_res_table_entries(data: &Vec<(usize, Option<ResTableEntry>)>) -> binrw::BinResult<()> {
-    for val in data {
-        if let Some(entry) = &val.1 {
-            entry.write_options(writer, endian, ())?;
-        }
+impl Writeable for ResTableType {
+    type Args = ();
+    fn write<W: Write + Seek>(self, writer: &mut W, _args: Self::Args) -> StreamResult<()> {
+        let header_size = self.header_size();
+        let header_offset = ResChunk::get_header_offset(writer.stream_position()?);
+
+        let sparse = self.flags.sparse();
+
+        self.id
+            .write_no_opts(writer)
+            .add_context(|| "write id for ResTableType")?;
+        self.flags
+            .write_no_opts(writer)
+            .add_context(|| "write flags for ResTableType")?;
+
+        let reserved: u16 = 0;
+        reserved
+            .write_no_opts(writer)
+            .add_context(|| "write reserved for ResTableType")?;
+
+        let entry_count: u32 = self.entries.len() as u32;
+        entry_count
+            .write_no_opts(writer)
+            .add_context(|| "write entry_count for ResTableType")?;
+
+        let entries_start = calc_entries_start(&self.config, self.entries.len());
+        entries_start
+            .write_no_opts(writer)
+            .add_context(|| "write entries_start for ResTableType")?;
+
+        self.config
+            .write_no_opts(writer)
+            .add_context(|| "write config for ResTableType")?;
+
+        let pos = writer.stream_position()?;
+
+        let entry_indicies = calculate_entry_indicies(&self.entries, sparse).map_err(|e| {
+            StreamError::new_string_context(e, pos, "calculate entry_indicies for ResTableType")
+        })?;
+        writer.seek(SeekFrom::Start(header_offset + 8 + header_size as u64))?; // FIXME: don't like this, we end up moving back 4 bytes
+        entry_indicies
+            .write_no_opts(writer)
+            .add_context(|| "write entry_indicies for ResTableType")?;
+
+        writer.seek(SeekFrom::Start(header_offset + entries_start as u64))?;
+
+        self.entries
+            .write_no_opts(writer)
+            .add_context(|| "write entries for ResTableType")
     }
-    Ok(())
+}
+
+impl Readable for ResTableType {
+    type Args = usize;
+    fn read<R: Read + Seek>(reader: &mut R, args: Self::Args) -> StreamResult<Self> {
+        let header_offset = ResChunk::get_header_offset(reader.stream_position()?);
+        let id = u8::read_no_opts(reader).add_context(|| "read id for ResTableType")?;
+        let flags = ResTableTypeFlags::read_no_opts(reader)
+            .add_context(|| "read flags for ResTableType")?;
+        let reserved =
+            u16::read_no_opts(reader).add_context(|| "read reserved for ResTableType")?;
+
+        if reserved != 0 {
+            return Err(StreamError::new_string_context(
+                format!("invalid reserved value: {}, expected 0", reserved),
+                reader.stream_position()?,
+                "validate reserved for ResTableType",
+            ));
+        }
+        let entry_count =
+            u32::read_no_opts(reader).add_context(|| "read entry_count for ResTableType")?;
+        let entries_start =
+            u32::read_no_opts(reader).add_context(|| "read entries_start for ResTableType")?;
+        let config =
+            ResTableConfig::read_no_opts(reader).add_context(|| "read config for ResTableType")?;
+
+        reader.seek(SeekFrom::Start(header_offset + args as u64))?;
+
+        let entry_indicies =
+            ResTableTypeEntryIndicies::read(reader, (entry_count as usize, flags.sparse()))
+                .add_context(|| "read entry_indicies for ResTableType")?;
+
+        reader.seek(SeekFrom::Start(header_offset + entries_start as u64))?;
+
+        let entries = <Vec<(usize, Option<ResTableEntry>)>>::read(reader, entry_indicies)
+            .add_context(|| "read entries for ResTableType")?;
+
+        Ok(Self {
+            id,
+            flags,
+            config,
+            entries,
+        })
+    }
+}
+
+impl Writeable for Vec<(usize, Option<ResTableEntry>)> {
+    type Args = ();
+    fn write<W: Write + Seek>(self, writer: &mut W, _args: Self::Args) -> StreamResult<()> {
+        for val in self {
+            if let Some(entry) = val.1 {
+                entry
+                    .write_no_opts(writer)
+                    .add_context(|| "write entry for Vec<(usize, Option<ResTableEntry>)>")?;
+            }
+        }
+
+        Ok(())
+    }
 }
 
 impl HeaderSizeInstance for ResTableType {
@@ -533,43 +707,70 @@ fn calculate_entry_indicies(
     })
 }
 
-#[binrw::parser(reader, endian)]
-fn parse_res_table_entries(
-    entry_indicies: &ResTableTypeEntryIndicies,
-) -> BinResult<Vec<(usize, Option<ResTableEntry>)>> {
-    match entry_indicies {
-        ResTableTypeEntryIndicies::NoSparse(indcs) => {
-            let start_pos = reader.stream_position()?;
-            let mut data: Vec<(usize, Option<ResTableEntry>)> = Vec::with_capacity(indcs.len());
-            for (i, offset) in indcs.iter().enumerate() {
-                if *offset == 0xffffffff {
-                    data.push((i, None));
-                    continue;
+impl Readable for Vec<(usize, Option<ResTableEntry>)> {
+    type Args = ResTableTypeEntryIndicies;
+    fn read<R: Read + Seek>(reader: &mut R, args: Self::Args) -> StreamResult<Self> {
+        let start_pos = reader.stream_position()?;
+        match args {
+            ResTableTypeEntryIndicies::NoSparse(indcs) => {
+                let mut data: Vec<(usize, Option<ResTableEntry>)> = Vec::with_capacity(indcs.len());
+                for (i, offset) in indcs.into_iter().enumerate() {
+                    if offset == 0xffffffff {
+                        data.push((i, None));
+                    } else {
+                        reader.seek(SeekFrom::Start(start_pos + offset as u64))?;
+                        data.push((
+                            i,
+                            Some(ResTableEntry::read_no_opts(reader).add_context(|| {
+                                "read entry for ResTableTypeEntryIndicies::NoSparse"
+                            })?),
+                        ));
+                    }
                 }
-                reader.seek(SeekFrom::Start(start_pos + (*offset) as u64))?;
-                data.push((i, Some(ResTableEntry::read_options(reader, endian, ())?)));
-            }
 
-            Ok(data)
-        }
-        ResTableTypeEntryIndicies::Sparse(sp) => {
-            let start_pos = reader.stream_position()?;
-            let mut data: Vec<(usize, Option<ResTableEntry>)> = Vec::with_capacity(sp.len());
-            for v in sp {
-                reader.seek(SeekFrom::Start(start_pos + v.offset as u64))?;
-                data.push((
-                    v.idx as usize,
-                    Some(ResTableEntry::read_options(reader, endian, ())?),
-                ));
+                Ok(data)
             }
+            ResTableTypeEntryIndicies::Sparse(sp) => {
+                let mut data: Vec<(usize, Option<ResTableEntry>)> = Vec::with_capacity(sp.len());
 
-            Ok(data)
+                for v in sp {
+                    reader.seek(SeekFrom::Start(start_pos + v.offset as u64))?;
+                    data.push((
+                        v.idx as usize,
+                        Some(
+                            ResTableEntry::read_no_opts(reader).add_context(|| {
+                                "read entry for ResTableTypeEntryIndicies::Sparse"
+                            })?,
+                        ),
+                    ));
+                }
+
+                Ok(data)
+            }
         }
     }
 }
 
-#[derive(Debug, PartialEq, Clone, Copy, BinRead, BinWrite)]
+#[derive(Debug, PartialEq, Clone, Copy)]
 pub struct ResTableEntryFlags(u16);
+
+impl Readable for ResTableEntryFlags {
+    type Args = ();
+    fn read<R: Read + Seek>(reader: &mut R, _args: Self::Args) -> StreamResult<Self> {
+        Ok(Self(
+            u16::read_no_opts(reader).add_context(|| "read flags for ResTableEntryFlags")?,
+        ))
+    }
+}
+
+impl Writeable for ResTableEntryFlags {
+    type Args = ();
+    fn write<W: Write + Seek>(self, writer: &mut W, _args: Self::Args) -> StreamResult<()> {
+        self.0
+            .write_no_opts(writer)
+            .add_context(|| "write flags for ResTableEntryFlags")
+    }
+}
 
 impl ResTableEntryFlags {
     /// If set, this is a compex entry, holding a set of name/value mappings. It is followed by an
@@ -602,22 +803,45 @@ impl ResTableEntryFlags {
 /// - A ResValue structure, if FLAG_COMPLEX is -not- set.
 /// - An array of ResTableMap structures, if FLAG_COMPLEX is set.
 /// - If FLAG_COMPACT is set, this entry is a compact entry for simple values only
-#[binrw]
 #[derive(Debug, PartialEq, Clone)]
-#[brw(stream = s)]
 pub struct ResTableEntry {
     /// Number of bytes in this structure
-    #[br(temp)]
-    #[bw(calc=self.header_size() as u16)]
-    _header_size: u16,
-    flags: ResTableEntryFlags,
+    pub flags: ResTableEntryFlags,
 
-    #[br(parse_with=parse_table_entry_data, args(flags))]
-    #[bw(write_with=write_table_entry_data)]
-    #[bw(assert(flags.compact() == data.is_compact()))]
-    #[bw(assert(flags.complex() == data.is_complex()))]
-    // #[brw(pad_size_to=(size as u64) - 2 - 2)]
     pub data: ResTableEntryValue,
+}
+
+impl Readable for ResTableEntry {
+    type Args = ();
+    fn read<R: Read + Seek>(reader: &mut R, _args: Self::Args) -> StreamResult<Self> {
+        let _header_size =
+            u16::read_no_opts(reader).add_context(|| "read header_size for ResTableEntry")?;
+        let flags = ResTableEntryFlags::read_no_opts(reader)
+            .add_context(|| "read flags for ResTableEntry")?;
+
+        let data = ResTableEntryValue::read(reader, flags)
+            .add_context(|| "read data for ResTableEntryValue")?;
+
+        Ok(Self { flags, data })
+    }
+}
+
+impl Writeable for ResTableEntry {
+    type Args = ();
+    fn write<W: Write + Seek>(self, writer: &mut W, _args: Self::Args) -> StreamResult<()> {
+        let header_size: u16 = self.header_size() as u16;
+        header_size
+            .write_no_opts(writer)
+            .add_context(|| "write header_size for ResTableEntry")?;
+
+        self.flags
+            .write_no_opts(writer)
+            .add_context(|| "write flags for ResTableEntry")?;
+
+        self.data
+            .write_no_opts(writer)
+            .add_context(|| "write data for ResTableEntry")
+    }
 }
 
 impl HeaderSizeInstance for ResTableEntry {
@@ -669,7 +893,6 @@ impl ResTableEntryValue {
 
 /// Extended form of a ResTable_entry for map entries, defining a parent map resource from which to
 /// inherit values.
-#[binrw]
 #[derive(Debug, PartialEq, Clone)]
 pub struct ResTableMapEntry {
     /// Reference into ResTable_package::key_strings identifying this entry.
@@ -677,14 +900,42 @@ pub struct ResTableMapEntry {
     /// Resource identifier of the parent mapping, or 0 if there is none.
     /// This is always treated as a TYPE_DYNAMIC_REFERENCE.
     pub parent: ResTableRef,
-    /// Number of name/value pairs that follow for FLAG_COMPLEX
 
-    #[br(temp)]
-    #[bw(calc=map.len() as u32)]
-    count: u32,
-
-    #[br(count=count)]
     pub map: Vec<ResTableMap>,
+}
+
+impl Readable for ResTableMapEntry {
+    type Args = ();
+    fn read<R: Read + Seek>(reader: &mut R, _args: Self::Args) -> StreamResult<Self> {
+        let key = ResStringPoolRef::read_no_opts(reader)
+            .add_context(|| "read key for ResTableMapEntry")?;
+        let parent =
+            ResTableRef::read_no_opts(reader).add_context(|| "read parent for ResTableMapEntry")?;
+        let count = u32::read_no_opts(reader).add_context(|| "read count for ResTableMapEntry")?;
+        let map = <Vec<ResTableMap>>::read_vec(reader, count as usize)
+            .add_context(|| "read map for ResTableMapEntry")?;
+
+        Ok(Self { key, parent, map })
+    }
+}
+
+impl Writeable for ResTableMapEntry {
+    type Args = ();
+    fn write<W: Write + Seek>(self, writer: &mut W, _args: Self::Args) -> StreamResult<()> {
+        self.key
+            .write_no_opts(writer)
+            .add_context(|| "write key for ResTableMapEntry")?;
+        self.parent
+            .write_no_opts(writer)
+            .add_context(|| "write parent for ResTableMapEntry")?;
+        let count: u32 = self.map.len() as u32;
+        count
+            .write_no_opts(writer)
+            .add_context(|| "write count for ResTableMapEntry")?;
+        self.map
+            .write_vec(writer)
+            .add_context(|| "write map for ResTableMapEntry")
+    }
 }
 
 impl ResTableMapEntry {
@@ -693,11 +944,35 @@ impl ResTableMapEntry {
     }
 }
 
-#[derive(Debug, PartialEq, Clone, Copy, BinRead, BinWrite)]
+#[derive(Debug, PartialEq, Clone, Copy)]
 pub struct ResTableResValueEntry {
     /// Reference into ResTable_package::key_strings identifying this entry.
     pub key: ResTableRef,
     pub data: ResValue,
+}
+
+impl Readable for ResTableResValueEntry {
+    type Args = ();
+    fn read<R: Read + Seek>(reader: &mut R, _args: Self::Args) -> StreamResult<Self> {
+        Ok(Self {
+            key: ResTableRef::read_no_opts(reader)
+                .add_context(|| "read key for ResTableResValueEntry")?,
+            data: ResValue::read_no_opts(reader)
+                .add_context(|| "read data for ResTableValueEntry")?,
+        })
+    }
+}
+
+impl Writeable for ResTableResValueEntry {
+    type Args = ();
+    fn write<W: Write + Seek>(self, writer: &mut W, _args: Self::Args) -> StreamResult<()> {
+        self.key
+            .write_no_opts(writer)
+            .add_context(|| "write key for ResTableResValueEntry")?;
+        self.data
+            .write_no_opts(writer)
+            .add_context(|| "write data for ResTableResValueEntry")
+    }
 }
 
 impl ResTableResValueEntry {
@@ -707,7 +982,7 @@ impl ResTableResValueEntry {
 }
 
 /// A single name/value mapping that is part of a complex resource entry.
-#[derive(Debug, PartialEq, Clone, Copy, BinRead, BinWrite)]
+#[derive(Debug, PartialEq, Clone, Copy)]
 pub struct ResTableMap {
     /// The resource identifier defining this mapping's name. For attribute resources, 'name' can
     /// be one of the following special resource types to supply meta-data about the attribute; for
@@ -718,48 +993,99 @@ pub struct ResTableMap {
     pub value: ResValue,
 }
 
-#[binrw::parser(reader, endian)]
-fn parse_table_entry_data(flags: ResTableEntryFlags) -> BinResult<ResTableEntryValue> {
-    if flags.compact() {
-        return Ok(ResTableEntryValue::Compact(u32::read_options(
-            reader,
-            endian,
-            (),
-        )?));
-    } else if flags.complex() {
-        return Ok(ResTableEntryValue::Map(ResTableMapEntry::read_options(
-            reader,
-            endian,
-            (),
-        )?));
-    }
-    Ok(ResTableEntryValue::ResValue(
-        ResTableResValueEntry::read_options(reader, endian, ())?,
-    ))
-}
-
-#[binrw::writer(writer, endian)]
-fn write_table_entry_data(data: &ResTableEntryValue) -> BinResult<()> {
-    match data {
-        ResTableEntryValue::ResValue(map) => map.write_options(writer, endian, ()),
-        ResTableEntryValue::Map(map) => map.write_options(writer, endian, ()),
-        ResTableEntryValue::Compact(cm) => cm.write_options(writer, endian, ()),
+impl Readable for ResTableMap {
+    type Args = ();
+    fn read<R: Read + Seek>(reader: &mut R, _args: Self::Args) -> StreamResult<Self> {
+        Ok(Self {
+            name: ResTableRef::read_no_opts(reader).add_context(|| "read name for ResTableMap")?,
+            value: ResValue::read_no_opts(reader).add_context(|| "read value for ResTableMap")?,
+        })
     }
 }
 
-fn calc_entry_indicies(config: &ResTableConfig) -> u32 {
-    8 + 1 + 1 + 2 + 4 + 4 + config.get_size() as u32
+impl Writeable for ResTableMap {
+    type Args = ();
+    fn write<W: Write + Seek>(self, writer: &mut W, _args: Self::Args) -> StreamResult<()> {
+        self.name
+            .write_no_opts(writer)
+            .add_context(|| "write name for ResTableMap")?;
+        self.value
+            .write_no_opts(writer)
+            .add_context(|| "write value for ResTableMap")
+    }
+}
+
+impl Readable for ResTableEntryValue {
+    type Args = ResTableEntryFlags;
+    fn read<R: Read + Seek>(reader: &mut R, args: Self::Args) -> StreamResult<Self> {
+        if args.compact() {
+            Ok(ResTableEntryValue::Compact(
+                u32::read_no_opts(reader)
+                    .add_context(|| "read entries for ResTableEntryValue::Compact")?,
+            ))
+        } else if args.complex() {
+            Ok(ResTableEntryValue::Map(
+                ResTableMapEntry::read_no_opts(reader)
+                    .add_context(|| "read entries for ResTableEntryValue::Map")?,
+            ))
+        } else {
+            Ok(ResTableEntryValue::ResValue(
+                ResTableResValueEntry::read_no_opts(reader)
+                    .add_context(|| "read entries for ResTableEntryValue::ResValue")?,
+            ))
+        }
+    }
+}
+
+impl Writeable for ResTableEntryValue {
+    type Args = ();
+    fn write<W: Write + Seek>(self, writer: &mut W, _args: Self::Args) -> StreamResult<()> {
+        match self {
+            Self::ResValue(v) => v
+                .write_no_opts(writer)
+                .add_context(|| "write value for ResTableEntryValue::ResValue"),
+            Self::Map(v) => v
+                .write_no_opts(writer)
+                .add_context(|| "write value for ResTableEntryValue::Map"),
+            Self::Compact(v) => v
+                .write_no_opts(writer)
+                .add_context(|| "write value for ResTableEntryValue::Compact"),
+        }
+    }
 }
 
 fn calc_entries_start(config: &ResTableConfig, total_entries: usize) -> u32 {
-    calc_entry_indicies(config) + (total_entries * 4) as u32
+    8 + 1 + 1 + 2 + 4 + 4 + config.get_size() as u32 + (total_entries as u32 * 4)
 }
 
-#[binrw]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ResTableSparseTypeEntry {
     pub idx: u16,
     pub offset: u16,
+}
+
+impl Readable for ResTableSparseTypeEntry {
+    type Args = ();
+    fn read<R: Read + Seek>(reader: &mut R, _args: Self::Args) -> StreamResult<Self> {
+        Ok(Self {
+            idx: u16::read_no_opts(reader)
+                .add_context(|| "read idx for ResTableSparseTypeEntry")?,
+            offset: u16::read_no_opts(reader)
+                .add_context(|| "read offset for ResTableSparseTypeEntry")?,
+        })
+    }
+}
+
+impl Writeable for ResTableSparseTypeEntry {
+    type Args = ();
+    fn write<W: Write + Seek>(self, writer: &mut W, _args: Self::Args) -> StreamResult<()> {
+        self.idx
+            .write_no_opts(writer)
+            .add_context(|| "write idx for ResTableSparseTypeEntry")?;
+        self.offset
+            .write_no_opts(writer)
+            .add_context(|| "write offset for ResTableSparseTypeEntry")
+    }
 }
 
 impl ResTableSparseTypeEntry {
@@ -774,19 +1100,33 @@ pub enum ResTableTypeEntryIndicies {
     Sparse(Vec<ResTableSparseTypeEntry>),
 }
 
-impl BinWrite for ResTableTypeEntryIndicies {
-    type Args<'a> = ();
-    fn write_options<W: Write + Seek>(
-        &self,
-        writer: &mut W,
-        endian: binrw::Endian,
-        _args: Self::Args<'_>,
-    ) -> BinResult<()> {
+impl Writeable for ResTableTypeEntryIndicies {
+    type Args = ();
+    fn write<W: Write + Seek>(self, writer: &mut W, _args: Self::Args) -> StreamResult<()> {
         match self {
-            ResTableTypeEntryIndicies::Sparse(entries) => entries.write_options(writer, endian, ()),
-            ResTableTypeEntryIndicies::NoSparse(entries) => {
-                entries.write_options(writer, endian, ())
-            }
+            Self::Sparse(e) => e
+                .write_vec(writer)
+                .add_context(|| "write entries for ResTableTypeEntryIndicies::Sparse"),
+            Self::NoSparse(e) => e
+                .write_vec(writer)
+                .add_context(|| "write entries for ResTableTypeEntryIndicies::NoSparse"),
+        }
+    }
+}
+
+impl Readable for ResTableTypeEntryIndicies {
+    type Args = (usize, bool);
+    fn read<R: Read + Seek>(reader: &mut R, args: Self::Args) -> StreamResult<Self> {
+        if args.1 {
+            Ok(ResTableTypeEntryIndicies::Sparse(
+                <Vec<ResTableSparseTypeEntry>>::read_vec(reader, args.0)
+                    .add_context(|| "read entries for ResTableTypeEntryIndicies::Sparse")?,
+            ))
+        } else {
+            Ok(ResTableTypeEntryIndicies::NoSparse(
+                <Vec<u32>>::read_vec(reader, args.0)
+                    .add_context(|| "read entries for RestableTypeEntryIndicies::NoSparse")?,
+            ))
         }
     }
 }
@@ -797,31 +1137,6 @@ impl ResTableTypeEntryIndicies {
             ResTableTypeEntryIndicies::Sparse(_) => true,
             ResTableTypeEntryIndicies::NoSparse(_) => false,
         }
-    }
-    #[binrw::parser(reader, endian)]
-    pub fn parse(count: u32, is_sparse: bool) -> BinResult<ResTableTypeEntryIndicies> {
-        if is_sparse {
-            let data: Vec<ResTableSparseTypeEntry> = <_>::read_options(
-                reader,
-                endian,
-                VecArgs {
-                    count: count as usize,
-                    inner: (),
-                },
-            )?;
-
-            return Ok(ResTableTypeEntryIndicies::Sparse(data));
-        }
-        let data: Vec<u32> = <_>::read_options(
-            reader,
-            endian,
-            VecArgs {
-                count: count as usize,
-                inner: (),
-            },
-        )?;
-
-        Ok(ResTableTypeEntryIndicies::NoSparse(data))
     }
 
     pub fn len(&self) -> usize {
@@ -838,52 +1153,71 @@ impl ResTableTypeEntryIndicies {
 
 /// A collection of resource data types within a package. Followed by one or more ResTable_type and
 /// ResTable_typeSpec structures containing the entry values for each resource type.
-#[binread]
 #[derive(Debug, PartialEq, Clone)]
-#[br(import(size: u32))]
-#[br(stream = s)]
 pub struct ResTablePackage {
-    #[br(try_calc=Ok::<u64, binrw::Error>(ResChunk::get_header_offset(s.stream_position()?)))]
-    #[br(restore_position)]
-    #[br(temp)]
-    header_offset: u64,
-
     /// If this is a base package, its ID. Package IDs start at 1 (corresponding to the value of
     /// the package bits in a resource identifier). 0 means this is not a base package.
     pub id: u32,
 
     /// Actual name of this package, null terminated
-    #[br(parse_with=read_utf16_fixed_null_string, args(128))]
     pub name: String,
-
-    /// Offset to a ResStringPool_header defining the resource type symbol table. If zero, this
-    /// package is inherting from another base package (overriding specific values in it).
-    #[br(temp)]
-    type_strings: u32,
 
     /// Last index into type_strings that is for public use by others.
     pub last_public_type: u32,
 
-    /// Offset to a ResStringPool_header defining the resource key symbol table. If zero, this
-    /// package is inheriting from another base package (overriding specific values in it).
-    #[br(temp)]
-    key_strings: u32,
-
     /// Last index into key_strings that is for public use by others.
     pub last_public_key: u32,
-
     pub type_id_offset: u32,
-
-    #[br(parse_with=parse_string_pool, seek_before=std::io::SeekFrom::Start(header_offset + type_strings as u64))]
-    #[br(if(type_strings != 0))]
     pub string_pool_type: StringPoolHandler,
-
-    #[br(parse_with=parse_string_pool, seek_before=std::io::SeekFrom::Start(header_offset + key_strings as u64))]
-    #[br(if(key_strings != 0))]
     pub string_pool_key: StringPoolHandler,
-
-    #[br(parse_with=parse_chunks, args(((size as u64)-(s.stream_position()? - (header_offset as u64))) as u32))]
     pub chunks: Vec<ResChunk>,
+}
+
+impl Readable for ResTablePackage {
+    type Args = usize;
+    fn read<R: Read + Seek>(reader: &mut R, args: Self::Args) -> StreamResult<Self> {
+        let header_offset = ResChunk::get_header_offset(reader.stream_position()?);
+
+        let id = u32::read_no_opts(reader).add_context(|| "read id for ResTablePackage")?;
+        let name = read_utf16_fixed_null_string(reader, 128)
+            .add_context(|| "read name for ResTablePackage")?;
+        let type_strings =
+            u32::read_no_opts(reader).add_context(|| "read type_strings for ResTablePackage")?;
+        let last_public_type = u32::read_no_opts(reader)
+            .add_context(|| "read last_public_type for ResTablePackage")?;
+
+        let key_strings =
+            u32::read_no_opts(reader).add_context(|| "read key_strings for ResTablePackage")?;
+        let last_public_key =
+            u32::read_no_opts(reader).add_context(|| "read last_public_key for ResTablePackage")?;
+
+        let type_id_offset =
+            u32::read_no_opts(reader).add_context(|| "read type_id_offset for ResTablePackage")?;
+
+        reader.seek(SeekFrom::Start(header_offset + type_strings as u64))?;
+        let string_pool_type = parse_string_pool(reader)
+            .add_context(|| "read string_pool_type for ResTablePackage")?;
+
+        reader.seek(SeekFrom::Start(header_offset + key_strings as u64))?;
+        let string_pool_key =
+            parse_string_pool(reader).add_context(|| "read string_pool_key for ResTablePackage")?;
+
+        let size = args as u64 - (reader.stream_position()? - header_offset);
+
+        let chunks = <Vec<ResChunk>>::read(reader, size)
+            .add_context(|| "read chunks for ResTablePackage")?;
+
+        Ok(Self {
+            id,
+            name,
+            last_public_type,
+            last_public_key,
+            type_id_offset,
+            string_pool_type,
+            string_pool_key,
+            chunks,
+        })
+    }
 }
 
 impl HeaderSizeStatic for ResTablePackage {
@@ -919,32 +1253,36 @@ impl ResTablePackage {
     }
 }
 
-impl BinWrite for ResTablePackage {
-    type Args<'a> = ();
-    fn write_options<W: std::io::Write + std::io::Seek>(
-        &self,
-        writer: &mut W,
-        endian: binrw::Endian,
-        _args: Self::Args<'_>,
-    ) -> BinResult<()> {
+impl Writeable for ResTablePackage {
+    type Args = ();
+    fn write<W: Write + Seek>(self, writer: &mut W, _args: Self::Args) -> StreamResult<()> {
         let header_offset = ResChunk::get_header_offset(writer.stream_position()?);
-        self.id.write_options(writer, endian, ())?;
+        self.id
+            .write_no_opts(writer)
+            .add_context(|| "write id for ResTablePackage")?;
 
-        write_utf16_fixed_null_string(&self.name, writer, endian, (128,))?;
+        write_utf16_fixed_null_string(writer, &self.name, 128)
+            .add_context(|| "write name for ResTablePackage")?;
 
         let type_strings_pos_pos = writer.stream_position()?;
 
         writer.seek_relative(4)?;
 
-        self.last_public_type.write_options(writer, endian, ())?;
+        self.last_public_type
+            .write_no_opts(writer)
+            .add_context(|| "write last_public_type for ResTablePackage")?;
 
         let key_strings_pos_pos = writer.stream_position()?;
 
         writer.seek_relative(4)?;
 
-        self.last_public_key.write_options(writer, endian, ())?;
+        self.last_public_key
+            .write_no_opts(writer)
+            .add_context(|| "write last_public_key for ResTablePackage")?;
 
-        self.type_id_offset.write_options(writer, endian, ())?;
+        self.type_id_offset
+            .write_no_opts(writer)
+            .add_context(|| "write type_id_offset for ResTablePackage")?;
 
         // go back to write type_strings pos
 
@@ -954,13 +1292,16 @@ impl BinWrite for ResTablePackage {
 
         let type_strings_pos2: u32 = (type_string_pos - header_offset) as u32;
 
-        type_strings_pos2.write_options(writer, endian, ())?;
+        type_strings_pos2
+            .write_no_opts(writer)
+            .add_context(|| "write type_strings_pos for ResTablePackage")?;
 
         // go forward and write type_strings
 
         writer.seek(std::io::SeekFrom::Start(type_string_pos))?;
 
-        write_string_pool(&self.string_pool_type, writer, endian, ())?;
+        write_string_pool(writer, self.string_pool_type)
+            .add_context(|| "write string_pool_type for ResTablePackage")?;
 
         let key_string_pos = writer.stream_position()?;
 
@@ -970,15 +1311,20 @@ impl BinWrite for ResTablePackage {
 
         let key_strings_pos2: u32 = (key_string_pos - header_offset) as u32;
 
-        key_strings_pos2.write_options(writer, endian, ())?;
+        key_strings_pos2
+            .write_no_opts(writer)
+            .add_context(|| "write key_strings_pos for ResTablePackage")?;
 
         // go forward and write key_strings
 
         writer.seek(std::io::SeekFrom::Start(key_string_pos))?;
 
-        write_string_pool(&self.string_pool_key, writer, endian, ())?;
+        write_string_pool(writer, self.string_pool_key)
+            .add_context(|| "write string_pool_key for ResTablePackage")?;
 
-        self.chunks.write_options(writer, endian, ())?;
+        self.chunks
+            .write_vec(writer)
+            .add_context(|| "write chunks for ResTablePackage")?;
 
         Ok(())
     }
@@ -993,35 +1339,46 @@ impl Display for InvalidStringPoolResType {
     }
 }
 
-#[binrw::parser(reader, endian)]
-fn parse_string_pool() -> binrw::BinResult<StringPoolHandler> {
-    let chunk = ResChunk::read_options(reader, endian, ())?;
+fn parse_string_pool<R: Read + Seek>(reader: &mut R) -> StreamResult<StringPoolHandler> {
+    let start = reader.stream_position()?;
+    let chunk =
+        ResChunk::read_no_opts(reader).add_context(|| "read chunk for parse_string_pool")?;
 
     if let ResTypeValue::StringPool(sp) = chunk.data {
         return Ok(sp.into());
     }
 
-    Err(binrw::Error::Custom {
-        pos: reader.stream_position()?,
-        err: Box::new(InvalidStringPoolResType),
-    })
+    let res_type: ResType = (&chunk.data).into();
+
+    Err(StreamError::new_string_context(
+        format!("invalid res type: {}, expected StringPool", res_type),
+        start,
+        "validate chunk for parse_string_pool",
+    ))
 }
 
-#[binrw::writer(writer, endian)]
-fn write_string_pool(string_pool: &StringPoolHandler) -> binrw::BinResult<()> {
-    let chunk = ResChunkWriteRef {
-        data: ResTypeValueWriteRef::StringPool(&string_pool.string_pool),
+fn write_string_pool<W: Write + Seek>(
+    writer: &mut W,
+    string_pool: StringPoolHandler,
+) -> StreamResult<()> {
+    let chunk = ResChunk {
+        data: ResTypeValue::StringPool(string_pool.string_pool),
     };
-    chunk.write_options(writer, endian, ())
+    chunk
+        .write_no_opts(writer)
+        .add_context(|| "write string pool chunk for write_string_pool")
 }
 
-#[binrw::parser(reader, endian)]
-fn read_utf16_fixed_null_string(length: usize) -> binrw::BinResult<String> {
+fn read_utf16_fixed_null_string<R: Read + Seek>(
+    reader: &mut R,
+    length: usize,
+) -> StreamResult<String> {
     let mut data: Vec<u16> = Vec::new();
     let start = reader.stream_position()?;
     let end = start + (length as u64) * 2;
     for _ in 0..length {
-        let val = <u16>::read_options(reader, endian, ())?;
+        let val = <u16>::read_no_opts(reader)
+            .add_context(|| "read utf16 char for read_utf16_fixed_null_string")?;
         if val == 0 {
             reader.seek(std::io::SeekFrom::Start(end))?;
             break;
@@ -1029,9 +1386,8 @@ fn read_utf16_fixed_null_string(length: usize) -> binrw::BinResult<String> {
         data.push(val);
     }
 
-    String::from_utf16(data.as_slice()).map_err(|e| binrw::Error::Custom {
-        pos: start,
-        err: Box::new(e),
+    String::from_utf16(data.as_slice()).map_err(|e| {
+        StreamError::new_string_context(e, start, "decode utf16 for read_utf16_fixed_null_string")
     })
 }
 
@@ -1048,19 +1404,22 @@ impl Display for PackageNameError {
     }
 }
 
-#[binrw::writer(writer, endian)]
-fn write_utf16_fixed_null_string(string: &str, length: usize) -> binrw::BinResult<()> {
+fn write_utf16_fixed_null_string<W: Write + Seek>(
+    writer: &mut W,
+    string: &str,
+    length: usize,
+) -> StreamResult<()> {
     let mut data: Vec<u16> = string.encode_utf16().collect();
     if data.len() >= length {
-        return Err(binrw::Error::Custom {
-            pos: writer.stream_position()?,
-            err: Box::new(PackageNameError(data.len())),
-        });
+        return Err(StreamError::new_string_context(
+            format!("invalid data length {}, expected {}", data.len(), length),
+            writer.stream_position()?,
+            "validate data length for write_utf16_fixed_null_string",
+        ));
     }
     data.resize(length, 0);
-    for val in data {
-        val.write_options(writer, endian, ())?;
-    }
+    data.write_vec(writer)
+        .add_context(|| "write encoded utf16 data for write_utf16_fixed_null_string")?;
 
     Ok(())
 }
@@ -1072,32 +1431,71 @@ fn write_utf16_fixed_null_string(string: &str, length: usize) -> binrw::BinResul
 /// Header for a resource table. Its data contains a series of additional chunks:
 ///
 /// - A ResStringPool_header containg all table values. This string pool contains all of the string
-/// values in the entire resource table (not the names of entries or type identifiers however).
+///     values in the entire resource table (not the names of entries or type identifiers however).
 /// - One or more ResTable_package chunks.
 ///
 /// Specific entries within a resource table can be uniquely identified with a single integer as
 /// defined by the ResTable_ref structure.
-#[binrw]
 #[derive(Debug, PartialEq, Clone)]
 pub struct ResTable {
-    #[br(temp)]
-    #[bw(calc=packages.packages.len() as u32)]
-    package_count: u32,
-
-    #[br(parse_with=parse_string_pool)]
-    #[bw(write_with=write_string_pool)]
     pub string_pool: StringPoolHandler,
-
-    #[br(args(package_count))]
     pub packages: Packages,
 }
 
-#[binrw]
+impl Readable for ResTable {
+    type Args = ();
+    fn read<R: Read + Seek>(reader: &mut R, _args: Self::Args) -> StreamResult<Self> {
+        let package_count =
+            u32::read_no_opts(reader).add_context(|| "read package_count for ResTable")?;
+        let string_pool =
+            parse_string_pool(reader).add_context(|| "read string_pool for ResTable")?;
+        let packages = Packages::read(reader, package_count as usize)
+            .add_context(|| "read packages for ResTable")?;
+
+        Ok(Self {
+            string_pool,
+            packages,
+        })
+    }
+}
+
+impl Writeable for ResTable {
+    type Args = ();
+    fn write<W: Write + Seek>(self, writer: &mut W, _args: Self::Args) -> StreamResult<()> {
+        let package_count: u32 = self.packages.packages.len() as u32;
+        package_count
+            .write_no_opts(writer)
+            .add_context(|| "write package_count for ResTable")?;
+        write_string_pool(writer, self.string_pool)
+            .add_context(|| "write string_pool for ResTable")?;
+        self.packages
+            .write_no_opts(writer)
+            .add_context(|| "write packages for ResTable")
+    }
+}
+
 #[derive(Debug, PartialEq, Clone)]
-#[br(import(count: u32))]
 pub struct Packages {
-    #[br(count=count)]
     packages: Vec<ResChunk>,
+}
+
+impl Readable for Packages {
+    type Args = usize;
+    fn read<R: Read + Seek>(reader: &mut R, args: Self::Args) -> StreamResult<Self> {
+        Ok(Self {
+            packages: <Vec<ResChunk>>::read_vec(reader, args)
+                .add_context(|| "read packages for Packages")?,
+        })
+    }
+}
+
+impl Writeable for Packages {
+    type Args = ();
+    fn write<W: Write + Seek>(self, writer: &mut W, _args: Self::Args) -> StreamResult<()> {
+        self.packages
+            .write_vec(writer)
+            .add_context(|| "write packages for Packages")
+    }
 }
 
 impl Packages {
@@ -1135,41 +1533,36 @@ impl HeaderSizeStatic for ResTable {
 }
 
 impl ResTable {
-    pub fn read<R: Seek + Read>(reader: &mut R) -> Result<Self, ReadARSCError> {
-        let header = ResChunk::read_le(reader).map_err(ReadARSCError::ReadError)?;
+    pub fn read_all<R: Seek + Read>(reader: &mut R) -> StreamResult<Self> {
+        let pos = reader.stream_position()?;
+        let header = ResChunk::read_no_opts(reader).add_context(|| "read chunk for ResTable")?;
 
         if let ResTypeValue::Table(table) = header.data {
             return Ok(table);
         }
-        Err(ReadARSCError::InvalidType((&header.data).into()))
+
+        let res_type: ResType = (&header.data).into();
+
+        Err(StreamError::new_string_context(
+            format!("invalid res_type: {}, expected ResTable", res_type),
+            pos,
+            "validate read chunk for ResTable",
+        ))
     }
 
-    pub fn write<W: Seek + Write>(&self, writer: &mut W) -> Result<(), WriteARSCError> {
-        let header = ResChunkWriteRef {
-            data: ResTypeValueWriteRef::Table(self),
+    pub fn write_all<W: Seek + Write>(self, writer: &mut W) -> StreamResult<()> {
+        let header = ResChunk {
+            data: ResTypeValue::Table(self),
         };
 
-        Ok(header.write_le(writer)?)
+        header
+            .write_no_opts(writer)
+            .add_context(|| "write chunk for ResTable")
     }
 }
 
 #[derive(Debug)]
-pub enum ReadARSCError {
-    ReadError(binrw::Error),
-    InvalidType(ResType),
-}
-
-impl Display for ReadARSCError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::ReadError(e) => write!(f, "failed to read the resource table: {}", e),
-            Self::InvalidType(t) => write!(f, "invalid type {}, expected resource table", t),
-        }
-    }
-}
-
-#[derive(Debug)]
-pub struct WriteARSCError(pub binrw::Error);
+pub struct WriteARSCError(pub std::io::Error);
 
 impl Display for WriteARSCError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -1177,29 +1570,29 @@ impl Display for WriteARSCError {
     }
 }
 
-impl From<binrw::Error> for WriteARSCError {
-    fn from(value: binrw::Error) -> Self {
+impl From<std::io::Error> for WriteARSCError {
+    fn from(value: std::io::Error) -> Self {
         Self(value)
     }
 }
 
 impl TryFrom<&[u8]> for ResTable {
-    type Error = ReadARSCError;
-    fn try_from(value: &[u8]) -> Result<Self, Self::Error> {
+    type Error = StreamError;
+    fn try_from(value: &[u8]) -> Result<Self, StreamError> {
         let mut stream = Cursor::new(value);
 
-        let val = ResTable::read(&mut stream)?;
+        let val = ResTable::read_all(&mut stream)?;
 
         Ok(val)
     }
 }
 
-impl TryFrom<&ResTable> for Vec<u8> {
-    type Error = WriteARSCError;
-    fn try_from(value: &ResTable) -> Result<Self, Self::Error> {
+impl TryFrom<ResTable> for Vec<u8> {
+    type Error = StreamError;
+    fn try_from(value: ResTable) -> Result<Self, StreamError> {
         let mut stream = Cursor::new(Vec::new());
 
-        value.write(&mut stream)?;
+        value.write_all(&mut stream)?;
 
         Ok(stream.into_inner())
     }
@@ -1208,16 +1601,34 @@ impl TryFrom<&ResTable> for Vec<u8> {
 /// A package-id to package name mapping for any shared libraries used in this resource table. The
 /// package-id's encoded in this resource table may be different that the id's assigned at runtime.
 /// We must be able to translate the package-id's based on the package name.
-#[binrw]
 #[derive(Debug, PartialEq, Clone)]
 pub struct ResTableLib {
-    /// The number of shared libraries linked in this resource table.
-    #[br(temp)]
-    #[bw(calc=entries.len() as u32)]
-    count: u32,
-
-    #[br(count=count)]
     pub entries: Vec<ResTableLibEntry>,
+}
+
+impl Readable for ResTableLib {
+    type Args = ();
+    fn read<R: Read + Seek>(reader: &mut R, _args: Self::Args) -> StreamResult<Self> {
+        let count = u32::read_no_opts(reader).add_context(|| "read count for ResTableLib")?;
+        let entries = <Vec<ResTableLibEntry>>::read_vec(reader, count as usize)
+            .add_context(|| "read entries for ResTableLib")?;
+
+        Ok(Self { entries })
+    }
+}
+
+impl Writeable for ResTableLib {
+    type Args = ();
+    fn write<W: Write + Seek>(self, writer: &mut W, _args: Self::Args) -> StreamResult<()> {
+        let count: u32 = self.entries.len() as u32;
+        count
+            .write_no_opts(writer)
+            .add_context(|| "write count for ResTableLib")?;
+
+        self.entries
+            .write_vec(writer)
+            .add_context(|| "write entries for ResTableLib")
+    }
 }
 
 impl HeaderSizeStatic for ResTableLib {
@@ -1227,29 +1638,70 @@ impl HeaderSizeStatic for ResTableLib {
 }
 
 /// A shared library package-id to package name entry.
-#[derive(Debug, PartialEq, Clone, BinRead, BinWrite)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct ResTableLibEntry {
     /// The package-id of this shared library was assigned at build time.
     /// We use a u32 to keep the structure aligned on a u32 boundary.
     pub package_id: u32,
 
     /// The package name of the shared library, \0 terminated
-    #[br(parse_with=read_utf16_fixed_null_string, args(128))]
-    #[bw(write_with=|s, w, e, _: ()| write_utf16_fixed_null_string(s, w, e, (128,)))]
     pub package_name: String,
 }
 
+impl Readable for ResTableLibEntry {
+    type Args = ();
+    fn read<R: Read + Seek>(reader: &mut R, _args: Self::Args) -> StreamResult<Self> {
+        Ok(Self {
+            package_id: u32::read_no_opts(reader)
+                .add_context(|| "read package_id for ResTableLibEntry")?,
+            package_name: read_utf16_fixed_null_string(reader, 128)
+                .add_context(|| "read package_name for ResTableLibEntry")?,
+        })
+    }
+}
+
+impl Writeable for ResTableLibEntry {
+    type Args = ();
+    fn write<W: Write + Seek>(self, writer: &mut W, _args: Self::Args) -> StreamResult<()> {
+        self.package_id
+            .write_no_opts(writer)
+            .add_context(|| "write package_id for ResTableLibEntry")?;
+        write_utf16_fixed_null_string(writer, &self.package_name, 128)
+            .add_context(|| "write package_name for ResTableLibEntry")
+    }
+}
+
 /// A map that allows rewriting staged (non-finalized) resource ids to their finalized counterparts
-#[binrw]
 #[derive(Debug, PartialEq, Clone)]
 pub struct ResTableStagedAlias {
-    /// The number of ResTableStagedAliasEntrys that follow this header.
-    #[br(temp)]
-    #[bw(calc=entries.len() as u32)]
-    count: u32,
-
-    #[br(count=count)]
     pub entries: Vec<ResTableStagedAliasEntry>,
+}
+
+impl Readable for ResTableStagedAlias {
+    type Args = ();
+    fn read<R: Read + Seek>(reader: &mut R, _args: Self::Args) -> StreamResult<Self> {
+        let count =
+            u32::read_no_opts(reader).add_context(|| "read count for ResTableStagedAlias")?;
+
+        let entries = <Vec<ResTableStagedAliasEntry>>::read_vec(reader, count as usize)
+            .add_context(|| "read entries for ResTableStagedAlias")?;
+
+        Ok(Self { entries })
+    }
+}
+
+impl Writeable for ResTableStagedAlias {
+    type Args = ();
+    fn write<W: Write + Seek>(self, writer: &mut W, _args: Self::Args) -> StreamResult<()> {
+        let count: u32 = self.entries.len() as u32;
+        count
+            .write_no_opts(writer)
+            .add_context(|| "write count for ResTableStagedAlias")?;
+
+        self.entries
+            .write_vec(writer)
+            .add_context(|| "write entries for ResTableStagedAlias")
+    }
 }
 
 impl HeaderSizeStatic for ResTableStagedAlias {
@@ -1259,7 +1711,7 @@ impl HeaderSizeStatic for ResTableStagedAlias {
 }
 
 /// Maps the staged (non-finalized) resource id to its finalized resource id.
-#[derive(Debug, PartialEq, Clone, Copy, BinRead, BinWrite)]
+#[derive(Debug, PartialEq, Clone, Copy)]
 pub struct ResTableStagedAliasEntry {
     /// The compile-time staged resource id to rewrite.
     pub staged_res_id: u32,
@@ -1268,18 +1720,60 @@ pub struct ResTableStagedAliasEntry {
     pub finalized_res_id: u32,
 }
 
+impl Readable for ResTableStagedAliasEntry {
+    type Args = ();
+    fn read<R: Read + Seek>(reader: &mut R, _args: Self::Args) -> StreamResult<Self> {
+        Ok(Self {
+            staged_res_id: u32::read_no_opts(reader)
+                .add_context(|| "read staged_res_id for ResTableStagedAliasEntry")?,
+            finalized_res_id: u32::read_no_opts(reader)
+                .add_context(|| "read finalized_res_id for ResTableStagedAliasEntry")?,
+        })
+    }
+}
+
+impl Writeable for ResTableStagedAliasEntry {
+    type Args = ();
+    fn write<W: Write + Seek>(self, writer: &mut W, _args: Self::Args) -> StreamResult<()> {
+        self.staged_res_id
+            .write_no_opts(writer)
+            .add_context(|| "write staged_res_id for ResTableStagedAliasEntry")?;
+        self.finalized_res_id
+            .write_no_opts(writer)
+            .add_context(|| "write finalized_res_id for ResTableStagedAliasEntry")
+    }
+}
+
 /// Specifies the set of resources that are explicitly allowed to be overlaid by RROs.
-#[derive(Debug, BinRead, BinWrite, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ResTableOverlayable {
     /// The name of the overlayable set of resources that overlays target.
-    #[br(parse_with=read_utf16_fixed_null_string, args(256))]
-    #[bw(write_with=|s,w,e,_: ()| write_utf16_fixed_null_string(s,w,e, (256,)))]
     pub name: String,
 
     /// The component responsible for enabling and disabling overlays targeting this chunk.
-    #[br(parse_with=read_utf16_fixed_null_string, args(256))]
-    #[bw(write_with=|s,w,e,_: ()| write_utf16_fixed_null_string(s,w,e, (256,)))]
     pub actor: String,
+}
+
+impl Readable for ResTableOverlayable {
+    type Args = ();
+    fn read<R: Read + Seek>(reader: &mut R, _args: Self::Args) -> StreamResult<Self> {
+        Ok(Self {
+            name: read_utf16_fixed_null_string(reader, 256)
+                .add_context(|| "read name for ResTableOverlayable")?,
+            actor: read_utf16_fixed_null_string(reader, 256)
+                .add_context(|| "read actor for ResTableOverlayable")?,
+        })
+    }
+}
+
+impl Writeable for ResTableOverlayable {
+    type Args = ();
+    fn write<W: Write + Seek>(self, writer: &mut W, _args: Self::Args) -> StreamResult<()> {
+        write_utf16_fixed_null_string(writer, &self.name, 256)
+            .add_context(|| "write name for ResTableOverlayable")?;
+        write_utf16_fixed_null_string(writer, &self.actor, 256)
+            .add_context(|| "write actor for ResTableOverlayable")
+    }
 }
 
 impl HeaderSizeStatic for ResTableOverlayable {
@@ -1289,9 +1783,27 @@ impl HeaderSizeStatic for ResTableOverlayable {
 }
 
 /// Flags for a bitmask for all possible overlayable policy options.
-#[derive(Debug, Copy, Clone, BinRead, BinWrite, PartialEq)]
+#[derive(Debug, Copy, Clone, PartialEq)]
 pub struct PolicyFlags {
     pub flags: u32,
+}
+
+impl Readable for PolicyFlags {
+    type Args = ();
+    fn read<R: Read + Seek>(reader: &mut R, _args: Self::Args) -> StreamResult<Self> {
+        Ok(Self {
+            flags: u32::read_no_opts(reader).add_context(|| "read flags for PolicyFlags")?,
+        })
+    }
+}
+
+impl Writeable for PolicyFlags {
+    type Args = ();
+    fn write<W: Write + Seek>(self, writer: &mut W, _args: Self::Args) -> StreamResult<()> {
+        self.flags
+            .write_no_opts(writer)
+            .add_context(|| "write flags for PolicyFlags")
+    }
 }
 
 impl PolicyFlags {
@@ -1344,20 +1856,48 @@ impl PolicyFlags {
 /// Holds a list of resource ids that are protected from being overlaid by a set of policies. If
 /// the overlay fulfils at least one of the policies, then the overlay can overlay the list of
 /// resources.
-#[binrw]
 #[derive(Debug, Clone, PartialEq)]
 pub struct ResTableOverlayablePolicy {
     pub policy_flags: PolicyFlags,
-    /// The number of ResTable_ref that follow this header
-    #[br(temp)]
-    #[bw(calc=entries.len() as u32)]
-    entry_count: u32,
-    #[br(count=entry_count)]
-    entries: Vec<ResTableRef>,
+    pub entries: Vec<ResTableRef>,
 }
 
 impl HeaderSizeStatic for ResTableOverlayablePolicy {
     fn header_size() -> usize {
         8
+    }
+}
+
+impl Readable for ResTableOverlayablePolicy {
+    type Args = ();
+    fn read<R: Read + Seek>(reader: &mut R, _args: Self::Args) -> StreamResult<Self> {
+        let policy_flags = PolicyFlags::read_no_opts(reader)
+            .add_context(|| "read policy_flags for ResTableOverlayablePolicy")?;
+        let entry_count = u32::read_no_opts(reader)
+            .add_context(|| "read entry_count for ResTableOverlayablePolicy")?;
+
+        let entries = <Vec<ResTableRef>>::read_vec(reader, entry_count as usize)
+            .add_context(|| "read entries for ResTableOverlayablePolicy")?;
+
+        Ok(Self {
+            policy_flags,
+            entries,
+        })
+    }
+}
+
+impl Writeable for ResTableOverlayablePolicy {
+    type Args = ();
+    fn write<W: Write + Seek>(self, writer: &mut W, _args: Self::Args) -> StreamResult<()> {
+        self.policy_flags
+            .write_no_opts(writer)
+            .add_context(|| "write policy flags for ResTableOverlayablePolicy")?;
+        let entry_count: u32 = self.entries.len() as u32;
+        entry_count
+            .write_no_opts(writer)
+            .add_context(|| "write entry_count for ResTableOverlayablePolicy")?;
+        self.entries
+            .write_vec(writer)
+            .add_context(|| "write entries for ResTableOverlayablePolicy")
     }
 }

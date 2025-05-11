@@ -3,22 +3,49 @@ use std::{
     io::{Cursor, Read, Seek, Write},
 };
 
-use binrw::{binrw, BinRead, BinWrite};
-
 use crate::{
-    defs::{parse_chunks, HeaderSizeStatic, ResChunk, ResType, ResTypeValue, ResourceMap},
+    defs::{HeaderSizeStatic, ResChunk, ResType, ResTypeValue, ResourceMap},
     res_value::{ResValue, ResValueType},
+    stream::{
+        NewResultCtx, Readable, ReadableNoOptions, StreamError, StreamResult, VecReadable,
+        VecWritable, Writeable, WriteableNoOptions,
+    },
     string_pool::{ResStringPoolRef, StringPool, StringPoolHandler},
 };
 
 /// Basic XML tree node. A single item in the XML document. Extended info about the node can be
 /// found after header.headerSize.
-#[derive(Debug, PartialEq, BinRead, BinWrite, Clone, Copy)]
+#[derive(Debug, PartialEq, Clone, Copy)]
 pub struct ResXMLTreeNode {
     /// Line number in original source file at which this element appeared.
     pub line_number: u32,
     /// Optional XML comment that was associated with the element; -1 if none.
     pub comment: ResStringPoolRef,
+}
+
+impl Readable for ResXMLTreeNode {
+    type Args = ();
+    fn read<R: Read + Seek>(reader: &mut R, _args: Self::Args) -> StreamResult<Self> {
+        Ok(Self {
+            line_number: u32::read_no_opts(reader)
+                .add_context(|| "read line_number for ResXMLTreeNode")?,
+            comment: ResStringPoolRef::read_no_opts(reader)
+                .add_context(|| "read comment for ResXMLTreeNode")?,
+        })
+    }
+}
+
+impl Writeable for ResXMLTreeNode {
+    type Args = ();
+    fn write<W: Write + Seek>(self, writer: &mut W, _args: Self::Args) -> StreamResult<()> {
+        self.line_number
+            .write_no_opts(writer)
+            .add_context(|| "write line_number for ResXMLTreeNode")?;
+        self.comment
+            .write_no_opts(writer)
+            .add_context(|| "write comment for ResXMLTreeNode")?;
+        Ok(())
+    }
 }
 
 impl HeaderSizeStatic for ResXMLTreeNode {
@@ -29,13 +56,44 @@ impl HeaderSizeStatic for ResXMLTreeNode {
 
 /// Extended XML tree node for CDATA tags -- includes the CDATA string. Appears header.headerSize
 /// bytes after a ResXMLTree_node
-#[derive(Debug, PartialEq, BinRead, BinWrite, Clone, Copy)]
+#[derive(Debug, PartialEq, Clone, Copy)]
 pub struct ResXMLTreeCDataExt {
     pub node: ResXMLTreeNode,
     /// The raw CDATA character data.
     pub data: ResStringPoolRef,
     /// The typed value of the character data if this is a CDATA node.
     pub typed_data: ResValue,
+}
+
+impl Readable for ResXMLTreeCDataExt {
+    type Args = ();
+    fn read<R: Read + Seek>(reader: &mut R, _args: Self::Args) -> StreamResult<Self> {
+        Ok(Self {
+            node: ResXMLTreeNode::read_no_opts(reader)
+                .add_context(|| "read node for ResXMLTreeCDataExt")?,
+            data: ResStringPoolRef::read_no_opts(reader)
+                .add_context(|| "read data for ResXMLTreeCDataExt")?,
+            typed_data: ResValue::read_no_opts(reader)
+                .add_context(|| "read typed_data for ResXMLTreeCDataExt")?,
+        })
+    }
+}
+
+impl Writeable for ResXMLTreeCDataExt {
+    type Args = ();
+    fn write<W: Write + Seek>(self, writer: &mut W, _args: Self::Args) -> StreamResult<()> {
+        self.node
+            .write_no_opts(writer)
+            .add_context(|| "write node for ResXMLTreeCDataExt")?;
+        self.data
+            .write_no_opts(writer)
+            .add_context(|| "write data for ResXMLTreeCDataExt")?;
+        self.typed_data
+            .write_no_opts(writer)
+            .add_context(|| "write typed_data for ResXMLTreeCDataExt")?;
+
+        Ok(())
+    }
 }
 
 impl HeaderSizeStatic for ResXMLTreeCDataExt {
@@ -46,13 +104,44 @@ impl HeaderSizeStatic for ResXMLTreeCDataExt {
 
 /// Extended XML tree node for namespace start / end nodes. Appears header.headerSize bytes after a
 /// ResXMLTree_node.
-#[derive(Debug, PartialEq, BinRead, BinWrite, Copy, Clone)]
+#[derive(Debug, PartialEq, Copy, Clone)]
 pub struct ResXMLTreeNameSpaceExt {
     pub node: ResXMLTreeNode,
     /// The prefix of the namespace.
     pub prefix: ResStringPoolRef,
     /// The URI of the namespace.
     pub uri: ResStringPoolRef,
+}
+
+impl Readable for ResXMLTreeNameSpaceExt {
+    type Args = ();
+    fn read<R: Read + Seek>(reader: &mut R, _args: Self::Args) -> StreamResult<Self> {
+        Ok(Self {
+            node: ResXMLTreeNode::read_no_opts(reader)
+                .add_context(|| "read node for ResXMLTreeNameSpaceExt")?,
+            prefix: ResStringPoolRef::read_no_opts(reader)
+                .add_context(|| "read prefix for ResXMLTreeNameSpaceExt")?,
+            uri: ResStringPoolRef::read_no_opts(reader)
+                .add_context(|| "read uri for ResXMLTreeNameSpaceExt")?,
+        })
+    }
+}
+
+impl Writeable for ResXMLTreeNameSpaceExt {
+    type Args = ();
+    fn write<W: Write + Seek>(self, writer: &mut W, _args: Self::Args) -> StreamResult<()> {
+        self.node
+            .write_no_opts(writer)
+            .add_context(|| "write node for ResXMLTreeNameSpaceExt")?;
+        self.prefix
+            .write_no_opts(writer)
+            .add_context(|| "write prefix for ResXMLTreeNameSpaceExt")?;
+        self.uri
+            .write_no_opts(writer)
+            .add_context(|| "write uri ResXMLTreeNameSpaceExt")?;
+
+        Ok(())
+    }
 }
 
 impl HeaderSizeStatic for ResXMLTreeNameSpaceExt {
@@ -63,7 +152,7 @@ impl HeaderSizeStatic for ResXMLTreeNameSpaceExt {
 
 /// Extended XML tree node for element start / end nodes. Appears header.headerSize bytes after a
 /// ResXMLTree_node.
-#[derive(Debug, PartialEq, BinRead, BinWrite, Copy, Clone)]
+#[derive(Debug, PartialEq, Copy, Clone)]
 pub struct ResXMLTreeEndElementExt {
     pub node: ResXMLTreeNode,
     /// String of the full namespace of this element.
@@ -73,6 +162,37 @@ pub struct ResXMLTreeEndElementExt {
     pub name: ResStringPoolRef,
 }
 
+impl Readable for ResXMLTreeEndElementExt {
+    type Args = ();
+    fn read<R: Read + Seek>(reader: &mut R, _args: Self::Args) -> StreamResult<Self> {
+        Ok(Self {
+            node: ResXMLTreeNode::read_no_opts(reader)
+                .add_context(|| "read node for ResXMLTreeEndElementExt")?,
+            ns: ResStringPoolRef::read_no_opts(reader)
+                .add_context(|| "read ns for ResXMLTreeEndElementExt")?,
+            name: ResStringPoolRef::read_no_opts(reader)
+                .add_context(|| "read name for ResXMLTreeEndElementExt")?,
+        })
+    }
+}
+
+impl Writeable for ResXMLTreeEndElementExt {
+    type Args = ();
+    fn write<W: Write + Seek>(self, writer: &mut W, _args: Self::Args) -> StreamResult<()> {
+        self.node
+            .write_no_opts(writer)
+            .add_context(|| "write node for ResXMLTreeEndElementExt")?;
+        self.ns
+            .write_no_opts(writer)
+            .add_context(|| "write ns for ResXMLTreeEndElementExt")?;
+        self.name
+            .write_no_opts(writer)
+            .add_context(|| "write name for ResXMLTreeEndElementExt")?;
+
+        Ok(())
+    }
+}
+
 impl HeaderSizeStatic for ResXMLTreeEndElementExt {
     fn header_size() -> usize {
         ResXMLTreeNode::header_size()
@@ -80,16 +200,9 @@ impl HeaderSizeStatic for ResXMLTreeEndElementExt {
 }
 /// Extended XML tree node for start tags -- includes attribute information.
 /// Appears header.headerSize bytes after a ResXMLTree_node.
-#[binrw]
-#[brw(stream = s)]
 #[derive(Debug, PartialEq, Clone)]
 pub struct ResXMLTreeAttrExt {
     pub node: ResXMLTreeNode,
-
-    #[br(temp)]
-    #[brw(try_calc=s.stream_position())]
-    #[bw(restore_position)]
-    start_offset: u64,
 
     /// String of the full namespace of this element.
     pub ns: ResStringPoolRef,
@@ -98,23 +211,6 @@ pub struct ResXMLTreeAttrExt {
     /// node.
     pub name: ResStringPoolRef,
 
-    /// Byte offset from the start of this structure where the attributes start.
-    #[br(temp)]
-    #[bw(calc=4 + 4 + 2 + 2 + 2 + 2 + 2 + 2)]
-    attribute_start: u16,
-
-    /// Size of the ResXMLTree_attribute structures that follow.
-    #[bw(calc = 20)]
-    #[br(temp)]
-    #[br(assert(attribute_size==20))]
-    attribute_size: u16,
-
-    /// Number of attributes associated with an ELEMENT. These are availiable as an array of
-    /// ResXMLTree_attribute structures immediately following this node.
-    #[br(temp)]
-    #[bw(calc=attributes.len() as u16)]
-    attribute_count: u16,
-
     /// Index (1-based) of the "id" attribute. 0 if none.
     pub id_index: u16,
     /// Index (1-based) of the "class" attribute. 0 if none.
@@ -122,9 +218,107 @@ pub struct ResXMLTreeAttrExt {
     /// Index (1-based) of the "style" attribute. 0 if none.
     pub style_index: u16,
 
-    #[br(count=attribute_count)]
-    #[brw(seek_before=std::io::SeekFrom::Start(start_offset + (attribute_start as u64)))]
     pub attributes: Vec<ResXMLTreeAttribute>,
+}
+
+impl Writeable for ResXMLTreeAttrExt {
+    type Args = ();
+    fn write<W: Write + Seek>(self, writer: &mut W, _args: Self::Args) -> StreamResult<()> {
+        self.node
+            .write_no_opts(writer)
+            .add_context(|| "write node for ResXMLTreeAttrExt")?;
+
+        self.ns
+            .write_no_opts(writer)
+            .add_context(|| "write ns for ResXMLTreeAttrExt")?;
+        self.name
+            .write_no_opts(writer)
+            .add_context(|| "write name for ResXMLTreeAttrExt")?;
+
+        let attribute_start: u16 = 20;
+        attribute_start
+            .write_no_opts(writer)
+            .add_context(|| "write attribute_start for ResXMLTreeAttrExt")?;
+
+        let attribute_size: u16 = 20;
+        attribute_size
+            .write_no_opts(writer)
+            .add_context(|| "write attribute_size for ResXMLTreeAttrExt")?;
+
+        let attribute_count: u16 = self.attributes.len() as u16;
+        attribute_count
+            .write_no_opts(writer)
+            .add_context(|| "write attribute_count for ResXMLTreeAttrExt")?;
+
+        self.id_index
+            .write_no_opts(writer)
+            .add_context(|| "write id_index for ResXMLTeeAttrExt")?;
+        self.class_index
+            .write_no_opts(writer)
+            .add_context(|| "write class_index for ResXMLTreeAttrExt")?;
+        self.style_index
+            .write_no_opts(writer)
+            .add_context(|| "write style_index for ResXMLTreeAttrExt")?;
+
+        self.attributes
+            .write_vec(writer)
+            .add_context(|| "write attributes for ResXMLTreeAttrExt")?;
+
+        Ok(())
+    }
+}
+
+impl Readable for ResXMLTreeAttrExt {
+    type Args = ();
+    fn read<R: Read + Seek>(reader: &mut R, _args: Self::Args) -> StreamResult<Self> {
+        let node = ResXMLTreeNode::read_no_opts(reader)
+            .add_context(|| "read node for ResXMLTreeAttrExt")?;
+        let start_pos = reader.stream_position()?;
+
+        let ns = ResStringPoolRef::read_no_opts(reader)
+            .add_context(|| "read ns for ResXMLTreeAttrExt")?;
+        let name = ResStringPoolRef::read_no_opts(reader)
+            .add_context(|| "read name for ResXMLTreeAttrExt")?;
+
+        let attribute_start = u16::read_no_opts(reader)
+            .add_context(|| "read attribute_start for ResXMLTreeAttrExt")?;
+
+        let attribute_size = u16::read_no_opts(reader)
+            .add_context(|| "read attribute_size for ResXMLTreeAttrExt")?;
+
+        if attribute_size != 20 {
+            return Err(StreamError::new_string_context(
+                format!("invalid attribute_size: {}, expected 20", attribute_size),
+                reader.stream_position()?,
+                "validate attribute size for ResXMLTreeAttrExt",
+            ));
+        }
+
+        let attribute_count = u16::read_no_opts(reader)
+            .add_context(|| "read attribute_count for ResXMLTreeAttrExt")?;
+
+        let id_index =
+            u16::read_no_opts(reader).add_context(|| "read id_index for ResXMLTreeAttrExt")?;
+        let class_index =
+            u16::read_no_opts(reader).add_context(|| "read class_index for ResXMLTreeAttrExt")?;
+        let style_index =
+            u16::read_no_opts(reader).add_context(|| "read style_index for ResXMLTreeAttrExt")?;
+
+        reader.seek(std::io::SeekFrom::Start(start_pos + attribute_start as u64))?;
+
+        let attributes = <Vec<ResXMLTreeAttribute>>::read_vec(reader, attribute_count as usize)
+            .add_context(|| "read attributes for ResXMLTreeAttrExt")?;
+
+        Ok(Self {
+            node,
+            ns,
+            name,
+            id_index,
+            class_index,
+            style_index,
+            attributes,
+        })
+    }
 }
 
 impl HeaderSizeStatic for ResXMLTreeAttrExt {
@@ -140,7 +334,7 @@ pub enum NodeToElementError {
     NoNodeName { index: u32 },
 }
 
-#[derive(Debug, PartialEq, BinRead, BinWrite, Copy, Clone)]
+#[derive(Debug, PartialEq, Copy, Clone)]
 pub struct ResXMLTreeAttribute {
     /// Namespace of this attribute.
     pub ns: ResStringPoolRef,
@@ -150,6 +344,40 @@ pub struct ResXMLTreeAttribute {
     pub raw_value: ResStringPoolRef,
     /// Processed typed value of this attribute.
     pub typed_value: ResValue,
+}
+
+impl Readable for ResXMLTreeAttribute {
+    type Args = ();
+    fn read<R: Read + Seek>(reader: &mut R, _args: Self::Args) -> StreamResult<Self> {
+        Ok(Self {
+            ns: ResStringPoolRef::read_no_opts(reader)
+                .add_context(|| "read ns for ResXMLTreeAttribute")?,
+            name: ResStringPoolRef::read_no_opts(reader)
+                .add_context(|| "read name for ResXMLTreeAttribute")?,
+            raw_value: ResStringPoolRef::read_no_opts(reader)
+                .add_context(|| "read raw_value for ResXMLTreeAttribute")?,
+            typed_value: ResValue::read_no_opts(reader)
+                .add_context(|| "read typed_value for ResXMLTreeAttribute")?,
+        })
+    }
+}
+
+impl Writeable for ResXMLTreeAttribute {
+    type Args = ();
+    fn write<W: Write + Seek>(self, writer: &mut W, _args: Self::Args) -> StreamResult<()> {
+        self.ns
+            .write_no_opts(writer)
+            .add_context(|| "write ns for ResXMLTreeAttribute")?;
+        self.name
+            .write_no_opts(writer)
+            .add_context(|| "write name for ResXMLTreeAttribute")?;
+        self.raw_value
+            .write_no_opts(writer)
+            .add_context(|| "write raw_value for ResXMLTreeAttribute")?;
+        self.typed_value
+            .write_no_opts(writer)
+            .add_context(|| "write typed_value for ResXMLTreeAttribute")
+    }
 }
 
 impl ResXMLTreeAttribute {
@@ -172,11 +400,28 @@ impl ResXMLTreeAttribute {
     }
 }
 
-#[derive(Debug, BinRead, BinWrite, PartialEq, Clone)]
-#[br(import(size: u32))]
+#[derive(Debug, PartialEq, Clone)]
 pub struct RawXMLTree {
-    #[br(parse_with=parse_chunks, args(size))]
     pub chunks: Vec<ResChunk>,
+}
+
+impl Readable for RawXMLTree {
+    type Args = u64;
+    fn read<R: Read + Seek>(reader: &mut R, args: Self::Args) -> StreamResult<Self> {
+        Ok(Self {
+            chunks: <Vec<ResChunk>>::read(reader, args)
+                .add_context(|| "read chunks for RawXMLTree")?,
+        })
+    }
+}
+
+impl Writeable for RawXMLTree {
+    type Args = ();
+    fn write<W: Write + Seek>(self, writer: &mut W, _args: Self::Args) -> StreamResult<()> {
+        self.chunks
+            .write_vec(writer)
+            .add_context(|| "write chunks for RawXMLTree")
+    }
 }
 
 impl HeaderSizeStatic for RawXMLTree {
@@ -186,27 +431,35 @@ impl HeaderSizeStatic for RawXMLTree {
 }
 
 impl RawXMLTree {
-    pub fn read<R: Seek + Read>(reader: &mut R) -> Result<RawXMLTree, ReadAXMLError> {
-        let header = ResChunk::read_le(reader).map_err(ReadAXMLError::ReadError)?;
+    pub fn read_full<R: Seek + Read>(reader: &mut R) -> StreamResult<RawXMLTree> {
+        let pos = reader.stream_position()?;
+        let header = ResChunk::read_no_opts(reader).add_context(|| "read chunk for RawXMLTree")?;
 
         if let ResTypeValue::XML(xml) = header.data {
             return Ok(xml);
         }
-        Err(ReadAXMLError::InvalidType((&header.data).into()))
+        let res_type: ResType = (&header.data).into();
+        Err(StreamError::new_string_context(
+            format!("invalid res_type: {}, expected XML", res_type),
+            pos,
+            "validate read chunk for RawXMLTree",
+        ))
     }
 
-    pub fn write<W: Seek + Write>(self, writer: &mut W) -> Result<(), WriteAXMLError> {
+    pub fn write_full<W: Seek + Write>(self, writer: &mut W) -> StreamResult<()> {
         let header = ResChunk {
             data: ResTypeValue::XML(self),
         };
 
-        Ok(header.write_le(writer)?)
+        header
+            .write_no_opts(writer)
+            .add_context(|| "write chunk for RawXMLTree")
     }
 }
 
 #[derive(Debug)]
 pub enum ReadAXMLError {
-    ReadError(binrw::Error),
+    ReadError(std::io::Error),
     InvalidType(ResType),
 }
 
@@ -219,27 +472,12 @@ impl Display for ReadAXMLError {
     }
 }
 
-#[derive(Debug)]
-pub struct WriteAXMLError(pub binrw::Error);
-
-impl Display for WriteAXMLError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.0.fmt(f)
-    }
-}
-
-impl From<binrw::Error> for WriteAXMLError {
-    fn from(value: binrw::Error) -> Self {
-        Self(value)
-    }
-}
-
 impl TryFrom<RawXMLTree> for Vec<u8> {
-    type Error = WriteAXMLError;
+    type Error = StreamError;
     fn try_from(value: RawXMLTree) -> Result<Self, Self::Error> {
         let mut stream = Cursor::new(Vec::new());
 
-        value.write(&mut stream)?;
+        value.write_full(&mut stream)?;
 
         Ok(stream.into_inner())
     }
@@ -247,7 +485,7 @@ impl TryFrom<RawXMLTree> for Vec<u8> {
 
 #[derive(Debug)]
 pub enum TreeToElementError {
-    ReadError(binrw::Error),
+    ReadError(std::io::Error),
     InvalidType(Box<ResTypeValue>),
     NoElements,
     InvalidNameSpace,
@@ -285,7 +523,7 @@ pub struct XMLTree {
 
 #[derive(Debug)]
 pub enum ReadXMLTreeError {
-    ReadData(ReadAXMLError),
+    ReadData(StreamError),
     ConvertRaw(XMLTreeParseError),
 }
 
@@ -300,15 +538,16 @@ impl Display for ReadXMLTreeError {
 
 impl XMLTree {
     pub fn read<R: Read + Seek>(reader: &mut R) -> Result<XMLTree, ReadXMLTreeError> {
-        let raw_xml: RawXMLTree = RawXMLTree::read(reader).map_err(ReadXMLTreeError::ReadData)?;
+        let raw_xml: RawXMLTree =
+            RawXMLTree::read_full(reader).map_err(ReadXMLTreeError::ReadData)?;
 
         raw_xml.try_into().map_err(ReadXMLTreeError::ConvertRaw)
     }
 
-    pub fn write<W: Write + Seek>(self, writer: &mut W) -> Result<(), WriteAXMLError> {
+    pub fn write<W: Write + Seek>(self, writer: &mut W) -> Result<(), StreamError> {
         let raw_xml: RawXMLTree = self.into();
 
-        raw_xml.write(writer)?;
+        raw_xml.write_full(writer)?;
 
         Ok(())
     }
@@ -324,7 +563,7 @@ impl TryFrom<&[u8]> for XMLTree {
 }
 
 impl TryFrom<XMLTree> for Vec<u8> {
-    type Error = WriteAXMLError;
+    type Error = StreamError;
     fn try_from(value: XMLTree) -> Result<Self, Self::Error> {
         let mut writer = Cursor::new(Vec::new());
 

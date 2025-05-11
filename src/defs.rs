@@ -2,10 +2,12 @@
 
 use std::{fmt::Display, io::SeekFrom};
 
-use binrw::{binread, binrw, BinRead, BinResult, BinWrite};
-
 use crate::{
     align,
+    stream::{
+        NewResultCtx, Readable, ReadableNoOptions, ResultCtx, StreamResult, VecReadable,
+        VecWritable, Writeable, WriteableNoOptions,
+    },
     string_pool::StringPool,
     table::{
         ResTable, ResTableLib, ResTableOverlayable, ResTableOverlayablePolicy, ResTablePackage,
@@ -18,30 +20,99 @@ use crate::{
 };
 
 /// Header that appears at the front of every data chunk in a resource.
-#[binread]
-#[br(stream = s)]
 #[derive(Debug, PartialEq, Clone)]
 pub struct ResChunk {
-    /// Type identifier for this chunk. The meaning of this value depends on the containing chunk.
-    #[br(temp)]
-    r#type: ResType,
-    /// Size of the chunk header (in bytes). Adding this value to the address of the chunk allows
-    /// you to find its associated data (if any).
-    #[br(temp)]
-    header_size: u16,
-    /// Total size of this chunk (in bytes). This is the chunkSize plus the size of any data
-    /// associated with the chunk. Adding this value to the chunk allows you to completely skip its
-    /// contents (including any child chunks). If this value is the same as chunkSize, there is no
-    /// data associated with the chunk.
-    #[br(temp)]
-    size: u32,
-
     /// The actual data of this chunk. The type is based on the rtype field. The type is a
     /// [`ResTypeValue`], if not all of the bytes specified by [`size`] are read by the type, then
     /// the size will be padded so that end position is correct.
-    #[br(parse_with=parse_res_type_value, args(&r#type, size, header_size))]
-    #[br(pad_size_to=(size as u64) - 2 - 2 - 4)]
     pub data: ResTypeValue,
+}
+
+impl Readable for ResChunk {
+    type Args = ();
+    fn read<R: std::io::Read + std::io::Seek>(
+        reader: &mut R,
+        _args: Self::Args,
+    ) -> StreamResult<Self> {
+        let start_pos = reader.stream_position()?;
+        let res_type =
+            ResType::read_no_opts(reader).add_context(|| "read res_type for ResChunk")?;
+        let header_size = u16::read_no_opts(reader)
+            .add_context(|| format!("read header_size for ResChunk {}", res_type))?;
+        let size = u32::read_no_opts(reader)
+            .add_context(|| format!("read size for ResChunk {}", res_type))?;
+
+        let data = ResTypeValue::read(reader, (res_type, size, header_size))
+            .add_context(|| format!("read data for ResChunk {}", res_type))?;
+
+        reader
+            .seek(SeekFrom::Start(start_pos + size as u64))
+            .stream_context(|| {
+                format!(
+                    "seek to end of ResChunk {}, start_pos: {}, size: {}",
+                    res_type, start_pos, size
+                )
+            })?;
+
+        Ok(Self { data })
+    }
+}
+
+impl Writeable for ResChunk {
+    type Args = ();
+    fn write<W: std::io::Write + std::io::Seek>(
+        self,
+        writer: &mut W,
+        _args: Self::Args,
+    ) -> StreamResult<()> {
+        let res_type: ResType = (&self.data).into();
+        res_type
+            .write_no_opts(writer)
+            .add_context(|| format!("write res_type for ResChunk {}", res_type))?;
+
+        let header_size = (self.data.header_size() + ResChunk::header_size()) as u16;
+        header_size
+            .write_no_opts(writer)
+            .add_context(|| format!("write header_size for ResChunk {}", res_type))?;
+
+        let size_pos = writer.stream_position()?;
+
+        writer.seek_relative(4).stream_context(|| {
+            format!(
+                "skip 4 bytes for size_pos when writing ResChunk {}",
+                res_type
+            )
+        })?;
+
+        let start_pos = writer.stream_position()?;
+
+        self.data
+            .write_no_opts(writer)
+            .add_context(|| format!("write data for ResChunk {}", res_type))?;
+
+        let aligned_pos = align(writer.stream_position()?, 4);
+
+        let to_write = aligned_pos - writer.stream_position()?;
+
+        if to_write > 0 {
+            vec![0u8; to_write as usize]
+                .write_vec(writer)
+                .add_context(|| format!("add padding for ResChunk {}", res_type))?;
+        }
+
+        let end_pos = writer.stream_position()?;
+
+        let size = (end_pos - start_pos) as u32 + 8;
+
+        writer.seek(SeekFrom::Start(size_pos))?;
+
+        size.write_no_opts(writer)
+            .add_context(|| format!("write size for ResChunk {}", res_type))?;
+
+        writer.seek(SeekFrom::Start(end_pos))?;
+
+        Ok(())
+    }
 }
 
 impl HeaderSizeStatic for ResChunk {
@@ -52,74 +123,6 @@ impl HeaderSizeStatic for ResChunk {
         8
     }
 }
-
-/// Like a normal res chunk, except it takes a reference to a res type value rather than an
-/// owned value. Used because binrw::write_options takes a reference, whereas the ResChunk data
-/// type wants an owned ResTypeValue.
-#[derive(Debug, PartialEq, Clone)]
-pub struct ResChunkWriteRef<'a> {
-    pub data: ResTypeValueWriteRef<'a>,
-}
-
-impl BinWrite for ResChunkWriteRef<'_> {
-    type Args<'a> = ();
-    fn write_options<W: std::io::Write + std::io::Seek>(
-        &self,
-        writer: &mut W,
-        endian: binrw::Endian,
-        _args: Self::Args<'_>,
-    ) -> BinResult<()> {
-        let r#type: ResType = (&self.data).into();
-        r#type.write_options(writer, endian, ())?;
-
-        let header_size = (self.data.header_size() + ResChunk::header_size()) as u16;
-        header_size.write_options(writer, endian, ())?;
-
-        let size_pos = writer.stream_position()?;
-
-        writer.seek(SeekFrom::Current(4))?;
-
-        let start_pos = writer.stream_position()?;
-
-        write_res_type_write_ref_value(&self.data, writer, endian, ())?;
-
-        let aligned_pos = align(writer.stream_position()?, 4);
-
-        let to_write = aligned_pos - writer.stream_position()?;
-
-        if to_write > 0 {
-            writer.write_all(vec![0; to_write as usize].as_slice())?;
-        }
-
-        let end_pos = writer.stream_position()?;
-
-        let size = (end_pos - start_pos) as u32 + 8;
-
-        writer.seek(SeekFrom::Start(size_pos))?;
-
-        size.write_options(writer, endian, ())?;
-
-        writer.seek(SeekFrom::Start(end_pos))?;
-
-        Ok(())
-    }
-}
-
-impl BinWrite for ResChunk {
-    type Args<'a> = ();
-    fn write_options<W: std::io::Write + std::io::Seek>(
-        &self,
-        writer: &mut W,
-        endian: binrw::Endian,
-        _args: Self::Args<'_>,
-    ) -> BinResult<()> {
-        let writer_ref = ResChunkWriteRef {
-            data: (&self.data).into(),
-        };
-        writer_ref.write_options(writer, endian, ())
-    }
-}
-
 impl From<&ResTypeValue> for ResType {
     fn from(value: &ResTypeValue) -> Self {
         match value {
@@ -144,56 +147,6 @@ impl From<&ResTypeValue> for ResType {
     }
 }
 
-impl From<&ResTypeValueWriteRef<'_>> for ResType {
-    fn from(value: &ResTypeValueWriteRef) -> Self {
-        match value {
-            ResTypeValueWriteRef::Null => ResType::Null,
-            ResTypeValueWriteRef::Table(_) => ResType::Table,
-            ResTypeValueWriteRef::StringPool(_) => ResType::StringPool,
-            ResTypeValueWriteRef::XML(_) => ResType::XML,
-            ResTypeValueWriteRef::XMLStartElement(_) => ResType::XMLStartElement,
-            ResTypeValueWriteRef::XMLCData(_) => ResType::XMLCData,
-            ResTypeValueWriteRef::TableType(_) => ResType::TableType,
-            ResTypeValueWriteRef::TableSpec(_) => ResType::TableSpecType,
-            ResTypeValueWriteRef::TablePackage(_) => ResType::PackageType,
-            ResTypeValueWriteRef::TableLibrary(_) => ResType::TableLibrary,
-            ResTypeValueWriteRef::XMLEndElement(_) => ResType::XMLEndElement,
-            ResTypeValueWriteRef::ResourceMap(_) => ResType::ResourceMap,
-            ResTypeValueWriteRef::TableStagedAlias(_) => ResType::TableStagedAlias,
-            ResTypeValueWriteRef::XMLEndNameSpace(_) => ResType::XMLEndNameSpace,
-            ResTypeValueWriteRef::TableOverlayable(_) => ResType::TableOverlayable,
-            ResTypeValueWriteRef::XMLStartNameSpace(_) => ResType::XMLStartNameSpace,
-            ResTypeValueWriteRef::TableOverlayablePolicy(_) => ResType::TableOverlayablePolicy,
-        }
-    }
-}
-
-impl<'a> From<&'a ResTypeValue> for ResTypeValueWriteRef<'a> {
-    fn from(value: &'a ResTypeValue) -> Self {
-        match value {
-            ResTypeValue::Null => ResTypeValueWriteRef::Null,
-            ResTypeValue::Table(t) => ResTypeValueWriteRef::Table(t),
-            ResTypeValue::StringPool(sp) => ResTypeValueWriteRef::StringPool(sp),
-            ResTypeValue::XML(x) => ResTypeValueWriteRef::XML(x),
-            ResTypeValue::XMLStartElement(s) => ResTypeValueWriteRef::XMLStartElement(s),
-            ResTypeValue::TableType(t) => ResTypeValueWriteRef::TableType(t),
-            ResTypeValue::TableSpec(s) => ResTypeValueWriteRef::TableSpec(s),
-            ResTypeValue::TablePackage(p) => ResTypeValueWriteRef::TablePackage(p),
-            ResTypeValue::TableLibrary(l) => ResTypeValueWriteRef::TableLibrary(l),
-            ResTypeValue::ResourceMap(m) => ResTypeValueWriteRef::ResourceMap(m),
-            ResTypeValue::TableStagedAlias(a) => ResTypeValueWriteRef::TableStagedAlias(a),
-            ResTypeValue::XMLEndNameSpace(e) => ResTypeValueWriteRef::XMLEndNameSpace(e),
-            ResTypeValue::TableOverlayable(o) => ResTypeValueWriteRef::TableOverlayable(o),
-            ResTypeValue::XMLStartNameSpace(s) => ResTypeValueWriteRef::XMLStartNameSpace(s),
-            ResTypeValue::TableOverlayablePolicy(p) => {
-                ResTypeValueWriteRef::TableOverlayablePolicy(p)
-            }
-            ResTypeValue::XMLEndElement(e) => ResTypeValueWriteRef::XMLEndElement(e),
-            ResTypeValue::XMLCData(c) => ResTypeValueWriteRef::XMLCData(c),
-        }
-    }
-}
-
 impl From<ResTypeValue> for ResChunk {
     fn from(value: ResTypeValue) -> Self {
         Self { data: value }
@@ -204,12 +157,36 @@ impl From<ResTypeValue> for ResChunk {
 /// It is optional.
 ///
 /// Not actually optional though, apk will fail to install without it.
-#[binrw]
 #[derive(Debug, PartialEq, Clone, Default)]
-#[br(import(size: u32))]
 pub struct ResourceMap {
-    #[br(count=(size-(ResourceMap::header_size() + ResChunk::header_size()) as u32) / 4)]
     pub mapping: Vec<ResTableRef>,
+}
+
+impl Readable for ResourceMap {
+    type Args = usize;
+    fn read<R: std::io::Read + std::io::Seek>(
+        reader: &mut R,
+        args: Self::Args,
+    ) -> StreamResult<Self> {
+        let count = args - (Self::header_size() + ResChunk::header_size()) / 4;
+        Ok(Self {
+            mapping: <Vec<ResTableRef>>::read_vec(reader, count)
+                .add_context(|| "read mapping for ResourceMap")?,
+        })
+    }
+}
+
+impl Writeable for ResourceMap {
+    type Args = ();
+    fn write<W: std::io::Write + std::io::Seek>(
+        self,
+        writer: &mut W,
+        _args: Self::Args,
+    ) -> StreamResult<()> {
+        self.mapping
+            .write_vec(writer)
+            .add_context(|| "write mapping for ResourceMap")
+    }
 }
 
 impl From<ResourceMap> for ResChunk {
@@ -268,145 +245,109 @@ pub enum ResTypeValue {
     TableOverlayablePolicy(ResTableOverlayablePolicy),
     TableStagedAlias(ResTableStagedAlias),
 }
-
-/// Enum for all possible values for a [`ResChunk`]
-/// Differs to [`ResTypeValue`] because each variant holds a reference to the associated type, not
-/// an owned value.
-#[derive(Debug, PartialEq, Clone)]
-pub enum ResTypeValueWriteRef<'a> {
-    Null,
-    StringPool(&'a StringPool),
-    Table(&'a ResTable),
-    XML(&'a RawXMLTree),
-    XMLStartNameSpace(&'a ResXMLTreeNameSpaceExt),
-    XMLEndNameSpace(&'a ResXMLTreeNameSpaceExt),
-    XMLStartElement(&'a ResXMLTreeAttrExt),
-    XMLEndElement(&'a ResXMLTreeEndElementExt),
-    XMLCData(&'a ResXMLTreeCDataExt),
-    ResourceMap(&'a ResourceMap),
-    TablePackage(&'a ResTablePackage),
-    TableType(&'a ResTableType),
-    TableSpec(&'a ResTableTypeSpec),
-    TableLibrary(&'a ResTableLib),
-    TableOverlayable(&'a ResTableOverlayable),
-    TableOverlayablePolicy(&'a ResTableOverlayablePolicy),
-    TableStagedAlias(&'a ResTableStagedAlias),
-}
-
 impl HeaderSizeInstance for ResTypeValue {
     fn header_size(&self) -> usize {
-        let wref: ResTypeValueWriteRef = self.into();
-        wref.header_size()
-    }
-}
-
-impl HeaderSizeInstance for ResTypeValueWriteRef<'_> {
-    fn header_size(&self) -> usize {
         match self {
-            ResTypeValueWriteRef::Null => 0,
-            ResTypeValueWriteRef::XML(_) => RawXMLTree::header_size(),
-            ResTypeValueWriteRef::StringPool(_) => StringPool::header_size(),
-            ResTypeValueWriteRef::ResourceMap(_) => ResourceMap::header_size(),
-            ResTypeValueWriteRef::XMLStartNameSpace(_) => ResXMLTreeNameSpaceExt::header_size(),
-            ResTypeValueWriteRef::XMLStartElement(_) => ResXMLTreeAttrExt::header_size(),
-            ResTypeValueWriteRef::XMLEndElement(_) => ResXMLTreeEndElementExt::header_size(),
-            ResTypeValueWriteRef::XMLCData(_) => ResXMLTreeCDataExt::header_size(),
-            ResTypeValueWriteRef::XMLEndNameSpace(_) => ResXMLTreeNameSpaceExt::header_size(),
-            ResTypeValueWriteRef::Table(_) => ResTable::header_size(),
-            ResTypeValueWriteRef::TableSpec(_) => ResTableTypeSpec::header_size(),
-            ResTypeValueWriteRef::TableType(t) => t.header_size(),
-            ResTypeValueWriteRef::TablePackage(_) => ResTablePackage::header_size(),
-            ResTypeValueWriteRef::TableLibrary(_) => ResTableLib::header_size(),
-            ResTypeValueWriteRef::TableOverlayable(_) => ResTableOverlayable::header_size(),
-            ResTypeValueWriteRef::TableOverlayablePolicy(_) => {
-                ResTableOverlayablePolicy::header_size()
+            Self::Null => 0,
+            Self::StringPool(_) => StringPool::header_size(),
+            Self::Table(_) => ResTable::header_size(),
+            Self::XML(_) => RawXMLTree::header_size(),
+            Self::XMLStartNameSpace(_) => ResXMLTreeNameSpaceExt::header_size(),
+            Self::XMLEndNameSpace(_) => ResXMLTreeNameSpaceExt::header_size(),
+            Self::XMLStartElement(_) => ResXMLTreeAttrExt::header_size(),
+            Self::XMLEndElement(_) => ResXMLTreeEndElementExt::header_size(),
+            Self::XMLCData(_) => ResXMLTreeCDataExt::header_size(),
+            Self::ResourceMap(_) => ResourceMap::header_size(),
+            Self::TablePackage(_) => ResTablePackage::header_size(),
+            Self::TableType(t) => t.header_size(),
+            Self::TableSpec(_) => ResTableTypeSpec::header_size(),
+            Self::TableLibrary(_) => ResTableLib::header_size(),
+            Self::TableOverlayable(_) => ResTableOverlayable::header_size(),
+            Self::TableOverlayablePolicy(_) => ResTableOverlayablePolicy::header_size(),
+            Self::TableStagedAlias(_) => ResTableStagedAlias::header_size(),
+        }
+    }
+}
+
+impl Readable for ResTypeValue {
+    type Args = (ResType, u32, u16);
+
+    fn read<R: std::io::Read + std::io::Seek>(
+        reader: &mut R,
+        args: Self::Args,
+    ) -> StreamResult<Self> {
+        Ok(match args.0 {
+            ResType::Null => ResTypeValue::Null,
+            ResType::XML => ResTypeValue::XML(RawXMLTree::read(reader, args.1 as u64)?),
+            ResType::StringPool => ResTypeValue::StringPool(StringPool::read_no_opts(reader)?),
+            ResType::ResourceMap => {
+                ResTypeValue::ResourceMap(ResourceMap::read(reader, args.1 as usize)?)
             }
-
-            ResTypeValueWriteRef::TableStagedAlias(_) => ResTableStagedAlias::header_size(),
-        }
+            ResType::XMLStartNameSpace => {
+                ResTypeValue::XMLStartNameSpace(ResXMLTreeNameSpaceExt::read_no_opts(reader)?)
+            }
+            ResType::XMLStartElement => {
+                ResTypeValue::XMLStartElement(ResXMLTreeAttrExt::read_no_opts(reader)?)
+            }
+            ResType::XMLEndElement => {
+                ResTypeValue::XMLEndElement(ResXMLTreeEndElementExt::read_no_opts(reader)?)
+            }
+            ResType::XMLCData => ResTypeValue::XMLCData(ResXMLTreeCDataExt::read_no_opts(reader)?),
+            ResType::XMLEndNameSpace => {
+                ResTypeValue::XMLEndNameSpace(ResXMLTreeNameSpaceExt::read_no_opts(reader)?)
+            }
+            ResType::Table => ResTypeValue::Table(ResTable::read_no_opts(reader)?),
+            ResType::PackageType => {
+                ResTypeValue::TablePackage(ResTablePackage::read(reader, args.1 as usize)?)
+            }
+            ResType::TableSpecType => {
+                ResTypeValue::TableSpec(ResTableTypeSpec::read_no_opts(reader)?)
+            }
+            ResType::TableType => {
+                ResTypeValue::TableType(ResTableType::read(reader, args.2 as usize)?)
+            }
+            ResType::TableLibrary => ResTypeValue::TableLibrary(ResTableLib::read_no_opts(reader)?),
+            ResType::TableOverlayable => {
+                ResTypeValue::TableOverlayable(ResTableOverlayable::read_no_opts(reader)?)
+            }
+            ResType::TableOverlayablePolicy => ResTypeValue::TableOverlayablePolicy(
+                ResTableOverlayablePolicy::read_no_opts(reader)?,
+            ),
+            ResType::TableStagedAlias => {
+                ResTypeValue::TableStagedAlias(ResTableStagedAlias::read_no_opts(reader)?)
+            }
+        })
     }
 }
 
-#[binrw::parser(reader, endian)]
-fn parse_res_type_value(
-    res_type: &ResType,
-    size: u32,
-    header_size: u16,
-) -> BinResult<ResTypeValue> {
-    Ok(match res_type {
-        ResType::Null => ResTypeValue::Null,
-        ResType::XML => ResTypeValue::XML(RawXMLTree::read_options(reader, endian, (size,))?),
-        ResType::StringPool => {
-            ResTypeValue::StringPool(StringPool::read_options(reader, endian, ())?)
+impl Writeable for ResTypeValue {
+    type Args = ();
+    fn write<W: std::io::Write + std::io::Seek>(
+        self,
+        writer: &mut W,
+        _args: Self::Args,
+    ) -> StreamResult<()> {
+        match self {
+            ResTypeValue::Null => Ok(()),
+            ResTypeValue::StringPool(sp) => sp.write_no_opts(writer),
+            ResTypeValue::XMLStartElement(st) => st.write_no_opts(writer),
+            ResTypeValue::XMLEndElement(ee) => ee.write_no_opts(writer),
+            ResTypeValue::XMLCData(d) => d.write_no_opts(writer),
+            ResTypeValue::XML(xml) => xml.write_no_opts(writer),
+            ResTypeValue::XMLStartNameSpace(sn) => sn.write_no_opts(writer),
+            ResTypeValue::XMLEndNameSpace(en) => en.write_no_opts(writer),
+            ResTypeValue::ResourceMap(rm) => rm.write_no_opts(writer),
+            ResTypeValue::Table(tb) => tb.write_no_opts(writer),
+            ResTypeValue::TablePackage(tp) => tp.write_no_opts(writer),
+            ResTypeValue::TableSpec(sp) => sp.write_no_opts(writer),
+            ResTypeValue::TableType(tt) => tt.write_no_opts(writer),
+            ResTypeValue::TableLibrary(tl) => tl.write_no_opts(writer),
+            ResTypeValue::TableOverlayable(to) => to.write_no_opts(writer),
+            ResTypeValue::TableOverlayablePolicy(tp) => tp.write_no_opts(writer),
+            ResTypeValue::TableStagedAlias(ts) => ts.write_no_opts(writer),
         }
-        ResType::ResourceMap => {
-            ResTypeValue::ResourceMap(ResourceMap::read_options(reader, endian, (size,))?)
-        }
-        ResType::XMLStartNameSpace => ResTypeValue::XMLStartNameSpace(
-            ResXMLTreeNameSpaceExt::read_options(reader, endian, ())?,
-        ),
-        ResType::XMLStartElement => {
-            ResTypeValue::XMLStartElement(ResXMLTreeAttrExt::read_options(reader, endian, ())?)
-        }
-        ResType::XMLEndElement => {
-            ResTypeValue::XMLEndElement(ResXMLTreeEndElementExt::read_options(reader, endian, ())?)
-        }
-        ResType::XMLCData => {
-            ResTypeValue::XMLCData(ResXMLTreeCDataExt::read_options(reader, endian, ())?)
-        }
-        ResType::XMLEndNameSpace => {
-            ResTypeValue::XMLEndNameSpace(ResXMLTreeNameSpaceExt::read_options(reader, endian, ())?)
-        }
-        ResType::Table => ResTypeValue::Table(ResTable::read_options(reader, endian, ())?),
-        ResType::PackageType => {
-            ResTypeValue::TablePackage(ResTablePackage::read_options(reader, endian, (size,))?)
-        }
-        ResType::TableSpecType => {
-            ResTypeValue::TableSpec(ResTableTypeSpec::read_options(reader, endian, ())?)
-        }
-        ResType::TableType => {
-            ResTypeValue::TableType(ResTableType::read_options(reader, endian, (header_size,))?)
-        }
-        ResType::TableLibrary => {
-            ResTypeValue::TableLibrary(ResTableLib::read_options(reader, endian, ())?)
-        }
-        ResType::TableOverlayable => {
-            ResTypeValue::TableOverlayable(ResTableOverlayable::read_options(reader, endian, ())?)
-        }
-        ResType::TableOverlayablePolicy => ResTypeValue::TableOverlayablePolicy(
-            ResTableOverlayablePolicy::read_options(reader, endian, ())?,
-        ),
-        ResType::TableStagedAlias => {
-            ResTypeValue::TableStagedAlias(ResTableStagedAlias::read_options(reader, endian, ())?)
-        }
-    })
-}
-
-#[binrw::writer(writer, endian)]
-fn write_res_type_write_ref_value(value: &ResTypeValueWriteRef) -> BinResult<()> {
-    match value {
-        ResTypeValueWriteRef::Null => (),
-        ResTypeValueWriteRef::StringPool(sp) => sp.write_options(writer, endian, ())?,
-        ResTypeValueWriteRef::XMLStartElement(st) => st.write_options(writer, endian, ())?,
-        ResTypeValueWriteRef::XMLEndElement(ee) => ee.write_options(writer, endian, ())?,
-        ResTypeValueWriteRef::XMLCData(d) => d.write_options(writer, endian, ())?,
-        ResTypeValueWriteRef::XML(xml) => xml.write_options(writer, endian, ())?,
-        ResTypeValueWriteRef::XMLStartNameSpace(sn) => sn.write_options(writer, endian, ())?,
-        ResTypeValueWriteRef::XMLEndNameSpace(en) => en.write_options(writer, endian, ())?,
-        ResTypeValueWriteRef::ResourceMap(rm) => rm.write_options(writer, endian, ())?,
-        ResTypeValueWriteRef::Table(tb) => tb.write_options(writer, endian, ())?,
-        ResTypeValueWriteRef::TablePackage(tp) => tp.write_options(writer, endian, ())?,
-        ResTypeValueWriteRef::TableSpec(sp) => sp.write_options(writer, endian, ())?,
-        ResTypeValueWriteRef::TableType(tt) => tt.write_options(writer, endian, ())?,
-        ResTypeValueWriteRef::TableLibrary(tl) => tl.write_options(writer, endian, ())?,
-        ResTypeValueWriteRef::TableOverlayable(to) => to.write_options(writer, endian, ())?,
-        ResTypeValueWriteRef::TableOverlayablePolicy(tp) => tp.write_options(writer, endian, ())?,
-        ResTypeValueWriteRef::TableStagedAlias(ts) => ts.write_options(writer, endian, ())?,
     }
-
-    Ok(())
 }
-
 impl ResChunk {
     /// Subtracts the header size (8) from the current pos. Useful when a struct needs to find the
     /// start offset of the header. If pos is <= 8, 0 is returned.
@@ -422,42 +363,89 @@ impl ResChunk {
 /// Possible types for the data in a [`ResChunk`]. Note that this does not hold the actual data of
 /// the chunk, that is specified in [`ResTypeValue`], this is just for identification, parsing, and
 /// writing purposes.
-#[derive(Debug, PartialEq, BinRead, BinWrite)]
+#[derive(Debug, PartialEq, Clone, Copy)]
 pub enum ResType {
-    #[brw(magic(0x0000u16))]
     Null,
-    #[brw(magic(0x0001u16))]
     StringPool,
-    #[brw(magic(0x0002u16))]
     Table,
-    #[brw(magic(0x0003u16))]
     XML,
-    #[brw(magic(0x0100u16))]
     XMLStartNameSpace,
-    #[brw(magic(0x0101u16))]
     XMLEndNameSpace,
-    #[brw(magic(0x0102u16))]
     XMLStartElement,
-    #[brw(magic(0x0103u16))]
     XMLEndElement,
-    #[brw(magic(0x0104u16))]
     XMLCData,
-    #[brw(magic(0x0180u16))]
     ResourceMap,
-    #[brw(magic(0x0200u16))]
     PackageType,
-    #[brw(magic(0x0201u16))]
     TableType,
-    #[brw(magic(0x0202u16))]
     TableSpecType,
-    #[brw(magic(0x0203u16))]
     TableLibrary,
-    #[brw(magic(0x0204u16))]
     TableOverlayable,
-    #[brw(magic(0x0205u16))]
     TableOverlayablePolicy,
-    #[brw(magic(0x0206u16))]
     TableStagedAlias,
+}
+
+impl Readable for ResType {
+    type Args = ();
+    fn read<R: std::io::Read + std::io::Seek>(
+        reader: &mut R,
+        _args: Self::Args,
+    ) -> StreamResult<Self> {
+        let res_type: u16 = u16::read_no_opts(reader).add_context(|| "read res_type id")?;
+        Ok(match res_type {
+            0 => Self::Null,
+            1 => Self::StringPool,
+            2 => Self::Table,
+            3 => Self::XML,
+            0x100 => Self::XMLStartNameSpace,
+            0x101 => Self::XMLEndNameSpace,
+            0x102 => Self::XMLStartElement,
+            0x103 => Self::XMLEndElement,
+            0x104 => Self::XMLCData,
+            0x180 => Self::ResourceMap,
+            0x200 => Self::PackageType,
+            0x201 => Self::TableType,
+            0x202 => Self::TableSpecType,
+            0x203 => Self::TableLibrary,
+            0x204 => Self::TableOverlayable,
+            0x205 => Self::TableOverlayablePolicy,
+            0x206 => Self::TableStagedAlias,
+            v => Err(std::io::Error::other(format!("invalid type: {}", v)))
+                .with_context(reader.stream_position()?, || "match res_type id")?,
+        })
+    }
+}
+
+impl Writeable for ResType {
+    type Args = ();
+
+    fn write<W: std::io::Write + std::io::Seek>(
+        self,
+        writer: &mut W,
+        _args: Self::Args,
+    ) -> StreamResult<()> {
+        let res_type: u16 = match self {
+            Self::Null => 0,
+            Self::StringPool => 1,
+            Self::Table => 2,
+            Self::XML => 3,
+            Self::XMLStartNameSpace => 0x100,
+            Self::XMLEndNameSpace => 0x101,
+            Self::XMLStartElement => 0x102,
+            Self::XMLEndElement => 0x103,
+            Self::XMLCData => 0x104,
+            Self::ResourceMap => 0x180,
+            Self::PackageType => 0x200,
+            Self::TableType => 0x201,
+            Self::TableSpecType => 0x202,
+            Self::TableLibrary => 0x203,
+            Self::TableOverlayable => 0x204,
+            Self::TableOverlayablePolicy => 0x205,
+            Self::TableStagedAlias => 0x206,
+        };
+        res_type
+            .write_no_opts(writer)
+            .add_context(|| "write res_type id")
+    }
 }
 
 impl Display for ResType {
@@ -489,11 +477,49 @@ impl Display for ResType {
 /// value is structured as 0xpptteee, where pp is the package index, tt is the type index in that
 /// package, and eeee is the entry index in that type. The package and type values start a 1 for
 /// the first item, to help catch cases where they have been supplied.
-#[derive(Debug, BinRead, BinWrite, PartialEq, Copy, Clone)]
+#[derive(Debug, PartialEq, Copy, Clone)]
 pub struct ResTableRef {
     pub entry_index: u16,
     pub type_index: u8,
     pub package_index: u8,
+}
+
+impl Readable for ResTableRef {
+    type Args = ();
+    fn read<R: std::io::Read + std::io::Seek>(
+        reader: &mut R,
+        _args: Self::Args,
+    ) -> StreamResult<Self> {
+        Ok(Self {
+            entry_index: u16::read_no_opts(reader)
+                .add_context(|| "read entry_index for ResTableRef")?,
+            type_index: u8::read_no_opts(reader)
+                .add_context(|| "read type_index for ResTableRef")?,
+            package_index: u8::read_no_opts(reader)
+                .add_context(|| "read package_index for ResTableRef")?,
+        })
+    }
+}
+
+impl Writeable for ResTableRef {
+    type Args = ();
+    fn write<W: std::io::Write + std::io::Seek>(
+        self,
+        writer: &mut W,
+        _args: Self::Args,
+    ) -> StreamResult<()> {
+        self.entry_index
+            .write_no_opts(writer)
+            .add_context(|| "write entry_index for ResTableRef")?;
+        self.type_index
+            .write_no_opts(writer)
+            .add_context(|| "write type_index for ResTableRef")?;
+        self.package_index
+            .write_no_opts(writer)
+            .add_context(|| "write package_index for ResTableRef")?;
+
+        Ok(())
+    }
 }
 
 impl Display for ResTableRef {
@@ -520,17 +546,26 @@ impl From<u32> for ResTableRef {
     }
 }
 
-#[binrw::parser(reader, endian)]
-pub fn parse_chunks(size: u32) -> BinResult<Vec<ResChunk>> {
-    let start_pos = ResChunk::get_header_offset(reader.stream_position()?);
+impl Readable for Vec<ResChunk> {
+    type Args = u64;
+    fn read<R: std::io::Read + std::io::Seek>(
+        reader: &mut R,
+        args: Self::Args,
+    ) -> StreamResult<Self> {
+        let start_pos = ResChunk::get_header_offset(reader.stream_position()?);
+        let mut chunks: Vec<ResChunk> = Vec::new();
 
-    let mut chunks: Vec<ResChunk> = Vec::new();
+        let mut i = 0;
 
-    while reader.stream_position()? - start_pos < (size as u64) {
-        let chunk: ResChunk = ResChunk::read_options(reader, endian, ())?;
+        while reader.stream_position()? - start_pos < (args) {
+            let chunk =
+                ResChunk::read_no_opts(reader).add_context(|| format!("read res_chunk {}", i))?;
 
-        chunks.push(chunk);
+            chunks.push(chunk);
+
+            i += 1;
+        }
+
+        Ok(chunks)
     }
-
-    Ok(chunks)
 }
