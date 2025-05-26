@@ -1,4 +1,11 @@
 [package]
 name = "resand"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
+authors = ["fieryhenry"]
+description = "Read and write ARSC and AXML binary files used for Android Resources"
+readme = "README.md"
+repository = "https://codeberg.org/fieryhenry/resand"
+license = "Apache-2.0"
+keywords = ["android", "arsc", "axml", "resources"]
+categories = ["parser-implementations"]
