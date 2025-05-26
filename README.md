@@ -18,6 +18,10 @@ A lot of the code is based off of the
 
 ## Usage
 
+```sh
+cargo add resand
+```
+
 The following examples use .unwrap(), but obviously you should handle errors properly.
 
 Basic reading and writing of and xml tree:
