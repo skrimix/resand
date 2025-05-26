@@ -98,7 +98,7 @@ impl Readable for ResTypeNullType {
                     format!("invalid null value: {}, expected 0 or 1", v),
                     reader.stream_position()?,
                     "read ResTypeNullType",
-                ))
+                ));
             }
         })
     }
@@ -144,7 +144,7 @@ impl Readable for ResTypeBoolType {
                     format!("invalid bool type {}, expected 0, 1 or 0xffffffff", v),
                     reader.stream_position()?,
                     "read ResTypeBoolType",
-                ))
+                ));
             }
         })
     }
@@ -495,7 +495,7 @@ impl Readable for ResValueType {
                     format!("invalid res_type {}", v),
                     reader.stream_position()?,
                     "match res_type for ResValueType",
-                ))
+                ));
             }
         })
     }

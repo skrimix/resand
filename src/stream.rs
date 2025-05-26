@@ -108,11 +108,9 @@ impl<T> ResultCtx for Result<T, std::io::Error> {
     ) -> StreamResult<<Self as ResultCtx>::OkT> {
         match self {
             Ok(v) => StreamResult::Ok(v),
-            Err(e) => StreamResult::Err(StreamError::new_context(
-                e,
-                pos,
-                vec![context().to_string()],
-            )),
+            Err(e) => StreamResult::Err(StreamError::new_context(e, pos, vec![
+                context().to_string(),
+            ])),
         }
     }
     fn with_pos(self, pos: u64) -> StreamResult<Self::OkT> {
