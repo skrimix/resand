@@ -382,15 +382,34 @@ impl Writeable for ResXMLTreeAttribute {
 }
 
 impl ResXMLTreeAttribute {
+    /// Set this attribute to a string. Allocating the string in the string pool if needed.
+    /// Will overwrite whatever type was there previously
+    ///
+    /// # Arguments
+    ///
+    /// * `string` - &str or String to write and possibly allocate
+    /// * `strings` - &mut StringPoolHandler for the string pool
     pub fn write_string(&mut self, string: Cow<'_, str>, strings: &mut StringPoolHandler) {
         let string_pool_ref = strings.allocate(string);
         self.set_value(ResValue::new(ResValueType::String(string_pool_ref)));
     }
 
+    /// Set this attribute to a bool.
+    /// Will overwrite whatever type was there previously
+    ///
+    /// # Arguments
+    ///
+    /// * `value` - bool to write
     pub fn write_bool(&mut self, value: bool) {
         self.set_value(ResValue::new(ResValueType::IntBoolean(value.into())));
     }
 
+    /// Set this attribute to a specific value.
+    /// Will overwrite whatever type was there previously.
+    ///
+    /// # Arguments
+    ///
+    /// * `value` - generic ResValue to write.
     pub fn set_value(&mut self, value: ResValue) {
         self.typed_value = value;
 
@@ -399,6 +418,18 @@ impl ResXMLTreeAttribute {
             _ => self.raw_value = ResStringPoolRef::null(),
         };
     }
+
+    /// Create a new attribute
+    ///
+    /// # Arguments
+    ///
+    /// * `ns` - string pool reference to the namespace of this attribute.
+    /// * `name` - string pool reference to the name of the attribute.
+    /// * `value` - the value this attribute has.
+    ///
+    /// # Returns
+    ///
+    /// A new ResXMLTreeAttribute
     pub fn new(ns: ResStringPoolRef, name: ResStringPoolRef, value: ResValue) -> Self {
         let raw_value = if let ResValueType::String(string_ref) = value.data {
             string_ref
@@ -412,6 +443,22 @@ impl ResXMLTreeAttribute {
             typed_value: value,
         }
     }
+
+    /// Create a new attribute, allocating the name of the attribute if needed.
+    ///
+    /// Note: this does not modify the [`ResourceMap`] of the xml, which may be
+    /// necessary if the attribute name is new.
+    ///
+    /// # Arguments
+    ///
+    /// * `ns` - string pool reference to the namespace of this attribute.
+    /// * `name` - &str or String of the attribute.
+    /// * `value` - the value this attribute has.
+    /// * `strings` - &mut [`StringPoolHandler`] for string pool
+    ///
+    /// # Returns
+    ///
+    /// A new ResXMLTreeAttribute
     pub fn new_alloc(
         ns: ResStringPoolRef,
         name: Cow<'_, str>,
@@ -716,11 +763,19 @@ impl From<XMLTree> for RawXMLTree {
 }
 
 impl XMLTreeNode {
+    /// Find an element by name looking at the children for this node recursively.
+    ///
+    /// # Arguments
+    ///
+    /// * `name` - &str of the name of the element to find
+    /// * `strings` - String pool reference to resolve the names of elements
     pub fn find_element<'a>(
         &'a self,
         name: &str,
         strings: &StringPoolHandler,
     ) -> Option<&'a XMLTreeNode> {
+        // We could alloc `name`, and check the index against each element, but that wouldn't
+        // work if there were duplicate entries in the string pool
         if self.element.name.resolve(strings) == Some(name) {
             return Some(self);
         }
@@ -732,6 +787,13 @@ impl XMLTreeNode {
         None
     }
 
+    /// Get a direct child element of this node by name. Use [`find_element`] to search
+    /// recursively through all child elements
+    ///
+    /// # Arguments
+    ///
+    /// * `name` - name of the child to look for
+    /// * `strings` - string pool to resolve element names
     pub fn get_child<'a>(
         &'a self,
         name: &str,
@@ -742,6 +804,16 @@ impl XMLTreeNode {
             .find(|c| c.element.name.resolve(strings) == Some(name))
     }
 
+    /// Get mutable references to all child elements in a path
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - slice of string slices of element names to search for. E.g &["manifest", "application"]
+    /// * `strings` - string pool to resolve names of elements
+    ///
+    /// # Returns
+    ///
+    /// Vec<&mut XMLTreeNode>. All elements which matched the specified path
     pub fn get_elements_mut<'a>(
         &'a mut self,
         path: &[&str],
@@ -774,6 +846,16 @@ impl XMLTreeNode {
         elements
     }
 
+    /// Get a mutable reference to a child element by path
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - slice of string slices of element names to search for. E.g &["manifest", "application"]
+    /// * `strings` - string pool to resolve names of elements
+    ///
+    /// # Returns
+    ///
+    /// Option<&mut XMLTreeNode>. Some(..) if the element was found, None otherwise
     pub fn get_element_mut<'a>(
         &'a mut self,
         path: &[&str],
@@ -802,6 +884,17 @@ impl XMLTreeNode {
 
         None
     }
+
+    /// Get all child elements in a path
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - slice of string slices of element names to search for. E.g &["manifest", "application"]
+    /// * `strings` - string pool to resolve names of elements
+    ///
+    /// # Returns
+    ///
+    /// Vec<&XMLTreeNode>. All elements which matched the specified path
     pub fn get_elements<'a>(
         &'a self,
         path: &[&str],
@@ -834,6 +927,16 @@ impl XMLTreeNode {
         elements
     }
 
+    /// Get a child element by path
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - slice of string slices of element names to search for. E.g &["manifest", "application"]
+    /// * `strings` - string pool to resolve names of elements
+    ///
+    /// # Returns
+    ///
+    /// Option<&XMLTreeNode>. Some(..) if the element was found, None otherwise
     pub fn get_element<'a>(
         &'a self,
         path: &[&str],
@@ -862,6 +965,17 @@ impl XMLTreeNode {
 
         None
     }
+
+    /// Get a shared reference to an attribute by name
+    ///
+    /// # Arguments
+    ///
+    /// * `name` - the name of the attribute to look for
+    /// * `strings` - string pool to resolve attribute names
+    ///
+    /// # Returns
+    ///
+    /// Option<&ResXMLTreeAttribute>. Some(..) if the attribute was found. None otherwise
     pub fn get_attribute<'a>(
         &'a self,
         name: &str,
@@ -873,6 +987,16 @@ impl XMLTreeNode {
             .find(|attr| attr.name.resolve(strings) == Some(name))
     }
 
+    /// Get a mutable reference to an attribute by name
+    ///
+    /// # Arguments
+    ///
+    /// * `name` - the name of the attribute to look for
+    /// * `strings` - string pool to resolve attribute names
+    ///
+    /// # Returns
+    ///
+    /// Option<&mut ResXMLTreeAttribute>. Some(..) if the attribute was found. None otherwise
     pub fn get_attribute_mut<'a>(
         &'a mut self,
         name: &str,
@@ -884,6 +1008,21 @@ impl XMLTreeNode {
             .find(|attr| attr.name.resolve(strings) == Some(name))
     }
 
+    /// Insert a new attribute into a node. Will just overwrite an existing one if already present.
+    ///
+    /// # Arguments
+    ///
+    /// * `name` - name of the attribute to insert, Cow::Owned needed if attribute does't already exist
+    /// * `value` - value of the attribute
+    /// * `strings` - string pool to allocate and resolve attribute names
+    /// * `res_map` - map of attribute names to table references. Optional, may break some android
+    ///   stuff if not passed.
+    /// * `resource_id` - resource id to map the attribute name string to attribute. Again optional,
+    ///   but may break some android stuff if not passed.
+    ///
+    /// # Returns
+    ///
+    /// &mut ResXMLTreeAttribute, the attribute that was just inserted
     pub fn insert_attribute(
         &mut self,
         name: Cow<'_, str>,
@@ -951,6 +1090,19 @@ impl XMLTreeNode {
             }
         }
     }
+
+    /// Set the value of an attribute, will not add a new attribute if it doesn't already exist
+    /// Use [`XMLTreeNode::insert_attribute`] to do that
+    ///
+    /// # Arguments
+    ///
+    /// * `name` - name of the attribute to set
+    /// * `value` - value to set
+    /// * `strings` - string pool to resolve attribute names
+    ///
+    /// # Returns
+    ///
+    /// Option<&mut ResXMLTeeAttribute> returns Some(..) if the attribute was found, None otherwise
     pub fn set_attribute(
         &mut self,
         name: &str,

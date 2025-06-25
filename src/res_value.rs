@@ -9,6 +9,7 @@ use crate::{
     string_pool::{ResStringPoolRef, StringPoolHandler},
 };
 
+/// A value in a resource
 #[derive(Debug, PartialEq, Clone, Copy)]
 pub struct ResValue {
     /// The data for this item
@@ -74,11 +75,14 @@ impl ResValue {
 
         self.data = ResValueType::String(reference);
     }
+
+    /// Create a new ResValue of type bool
     pub fn new_bool(value: bool) -> Self {
         Self::new(ResValueType::IntBoolean(value.into()))
     }
 }
 
+/// A null res value
 #[derive(Debug, PartialEq, Copy, Clone)]
 pub enum ResTypeNullType {
     Undefined,
@@ -124,6 +128,7 @@ impl Writeable for ResTypeNullType {
     }
 }
 
+/// A res type representing a boolean value
 #[derive(Debug, PartialEq, Copy, Clone)]
 pub enum ResTypeBoolType {
     False,
