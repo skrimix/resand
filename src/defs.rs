@@ -477,11 +477,33 @@ impl Display for ResType {
 /// value is structured as 0xpptteee, where pp is the package index, tt is the type index in that
 /// package, and eeee is the entry index in that type. The package and type values start a 1 for
 /// the first item, to help catch cases where they have been supplied.
-#[derive(Debug, PartialEq, Copy, Clone)]
+#[derive(Debug, PartialEq, Copy, Clone, Eq)]
 pub struct ResTableRef {
     pub entry_index: u16,
     pub type_index: u8,
     pub package_index: u8,
+}
+
+impl PartialOrd for ResTableRef {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for ResTableRef {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        let s_i: u32 = (*self).into();
+        let o_i: u32 = (*other).into();
+
+        s_i.cmp(&o_i)
+    }
+}
+
+impl ResTableRef {
+    /// Empty table reference
+    pub fn null() -> Self {
+        0.into()
+    }
 }
 
 impl Readable for ResTableRef {
