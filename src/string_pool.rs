@@ -1,4 +1,5 @@
 use std::{
+    borrow::Cow,
     collections::HashMap,
     io::{Read, Seek, SeekFrom, Write},
     iter::zip,
@@ -394,13 +395,14 @@ impl StringPoolHandler {
         self.string_pool.resolve(reference)
     }
 
-    pub fn allocate(&mut self, string: String) -> ResStringPoolRef {
-        let exists = self.string_map.get(string.as_str());
+    pub fn allocate(&mut self, string: Cow<'_, str>) -> ResStringPoolRef {
+        let exists = self.string_map.get(string.as_ref());
         match exists {
             Some(index) => *index,
             None => {
-                let index = self.string_pool.push_string(string.clone());
-                self.string_map.insert(string, index);
+                let owned_string = string.into_owned();
+                let index = self.string_pool.push_string(owned_string.clone());
+                self.string_map.insert(owned_string, index);
 
                 index
             }

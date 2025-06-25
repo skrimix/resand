@@ -1,10 +1,11 @@
 use std::{
+    borrow::Cow,
     fmt::Display,
     io::{Cursor, Read, Seek, Write},
 };
 
 use crate::{
-    defs::{HeaderSizeStatic, ResChunk, ResType, ResTypeValue, ResourceMap},
+    defs::{HeaderSizeStatic, ResChunk, ResTableRef, ResType, ResTypeValue, ResourceMap},
     res_value::{ResValue, ResValueType},
     stream::{
         NewResultCtx, Readable, ReadableNoOptions, StreamError, StreamResult, VecReadable,
@@ -381,7 +382,7 @@ impl Writeable for ResXMLTreeAttribute {
 }
 
 impl ResXMLTreeAttribute {
-    pub fn write_string(&mut self, string: String, strings: &mut StringPoolHandler) {
+    pub fn write_string(&mut self, string: Cow<'_, str>, strings: &mut StringPoolHandler) {
         let string_pool_ref = strings.allocate(string);
         self.set_value(ResValue::new(ResValueType::String(string_pool_ref)));
     }

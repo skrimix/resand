@@ -1,4 +1,4 @@
-use std::{fmt::Display, str::FromStr};
+use std::{borrow::Cow, fmt::Display, str::FromStr};
 
 use crate::{
     defs::ResTableRef,
@@ -69,7 +69,7 @@ impl ResValue {
     }
 
     /// Set the value to be a string, allocating the string in the string pool if necessary
-    pub fn write_string(&mut self, string: String, string_pool: &mut StringPoolHandler) {
+    pub fn write_string(&mut self, string: Cow<'_, str>, string_pool: &mut StringPoolHandler) {
         let reference = string_pool.allocate(string);
 
         self.data = ResValueType::String(reference);
