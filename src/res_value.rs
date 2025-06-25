@@ -74,6 +74,9 @@ impl ResValue {
 
         self.data = ResValueType::String(reference);
     }
+    pub fn new_bool(value: bool) -> Self {
+        Self::new(ResValueType::IntBoolean(value.into()))
+    }
 }
 
 #[derive(Debug, PartialEq, Copy, Clone)]
