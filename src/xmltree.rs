@@ -399,6 +399,37 @@ impl ResXMLTreeAttribute {
             _ => self.raw_value = ResStringPoolRef::null(),
         };
     }
+    pub fn new(ns: ResStringPoolRef, name: ResStringPoolRef, value: ResValue) -> Self {
+        let raw_value = if let ResValueType::String(string_ref) = value.data {
+            string_ref
+        } else {
+            ResStringPoolRef::null()
+        };
+        Self {
+            ns,
+            name,
+            raw_value,
+            typed_value: value,
+        }
+    }
+    pub fn new_alloc(
+        ns: ResStringPoolRef,
+        name: Cow<'_, str>,
+        value: ResValue,
+        strings: &mut StringPoolHandler,
+    ) -> Self {
+        let raw_value = if let ResValueType::String(string_ref) = value.data {
+            string_ref
+        } else {
+            ResStringPoolRef::null()
+        };
+        Self {
+            ns,
+            name: strings.allocate(name),
+            raw_value,
+            typed_value: value,
+        }
+    }
 }
 
 #[derive(Debug, PartialEq, Clone)]
