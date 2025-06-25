@@ -774,6 +774,34 @@ impl XMLTreeNode {
         elements
     }
 
+    pub fn get_element_mut<'a>(
+        &'a mut self,
+        path: &[&str],
+        strings: &StringPoolHandler,
+    ) -> Option<&'a mut XMLTreeNode> {
+        let mut stack: Vec<(usize, &mut XMLTreeNode)> = Vec::new();
+
+        stack.push((0, self));
+
+        while let Some((index, element)) = stack.pop() {
+            let item = path.get(index);
+
+            if item.is_none() {
+                continue;
+            }
+
+            if item == element.element.name.resolve(strings).as_ref() {
+                if index == path.len() - 1 {
+                    return Some(element);
+                }
+                for child in element.children.iter_mut() {
+                    stack.push((index + 1, child));
+                }
+            }
+        }
+
+        None
+    }
     pub fn get_elements<'a>(
         &'a self,
         path: &[&str],
@@ -806,6 +834,34 @@ impl XMLTreeNode {
         elements
     }
 
+    pub fn get_element<'a>(
+        &'a self,
+        path: &[&str],
+        strings: &StringPoolHandler,
+    ) -> Option<&'a XMLTreeNode> {
+        let mut stack: Vec<(usize, &XMLTreeNode)> = Vec::new();
+
+        stack.push((0, self));
+
+        while let Some((index, element)) = stack.pop() {
+            let item = path.get(index);
+
+            if item.is_none() {
+                continue;
+            }
+
+            if item == element.element.name.resolve(strings).as_ref() {
+                if index == path.len() - 1 {
+                    return Some(element);
+                }
+                for child in &element.children {
+                    stack.push((index + 1, child));
+                }
+            }
+        }
+
+        None
+    }
     pub fn get_attribute<'a>(
         &'a self,
         name: &str,
