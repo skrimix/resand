@@ -884,6 +884,73 @@ impl XMLTreeNode {
             .find(|attr| attr.name.resolve(strings) == Some(name))
     }
 
+    pub fn insert_attribute(
+        &mut self,
+        name: Cow<'_, str>,
+        value: ResValue,
+        strings: &mut StringPoolHandler,
+        mut res_map: Option<&mut ResourceMap>,
+        resource_id: Option<ResTableRef>,
+    ) -> &mut ResXMLTreeAttribute {
+        // check if attribute already exists
+        let attr_ind = self
+            .element
+            .attributes
+            .iter()
+            .position(|attr| attr.name.resolve(strings) == Some(name.as_ref()));
+
+        let name_index = strings.allocate(name);
+
+        if let Some(ref mut res_map) = res_map
+            && let Some(resource_id) = resource_id
+        {
+            res_map.insert(name_index, resource_id);
+        }
+
+        if let Some(attr_ind) = attr_ind {
+            // should never panic, as we checked if attr_ind existed earlier
+            // probably a nicer way to do this, but the mutable refs make this hard
+            let attr = self
+                .element
+                .attributes
+                .get_mut(attr_ind)
+                .expect("attribute index is valid");
+            attr.set_value(value);
+            attr
+        } else {
+            let attr = ResXMLTreeAttribute::new(self.element.ns, name_index, value);
+
+            // insert the attribute according to it's resource id, apparently some android things
+            // expect attributes to be sorted like that.
+            let position = if let Some(res_map) = res_map
+                && let Some(resource_id) = resource_id
+            {
+                self.element.attributes.iter().position(|attr| {
+                    res_map
+                        .get(attr.name)
+                        .is_some_and(|attr_ref| *attr_ref >= resource_id)
+                })
+            } else {
+                None
+            };
+
+            if let Some(position) = position {
+                self.element.attributes.insert(position, attr);
+                self
+                    .element
+                    .attributes
+                    .get_mut(position)
+                    .expect("attribute inserted correctly")
+            } else {
+                self.element.attributes.push(attr);
+                self
+                    .element
+                    .attributes
+                    .last_mut()
+                    .expect("attributes was not empty")
+            }
+        }
+    }
     pub fn set_attribute(
         &mut self,
         name: &str,
