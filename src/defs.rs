@@ -38,20 +38,17 @@ impl Readable for ResChunk {
         let res_type =
             ResType::read_no_opts(reader).add_context(|| "read res_type for ResChunk")?;
         let header_size = u16::read_no_opts(reader)
-            .add_context(|| format!("read header_size for ResChunk {}", res_type))?;
+            .add_context(|| format!("read header_size for ResChunk {res_type}"))?;
         let size = u32::read_no_opts(reader)
-            .add_context(|| format!("read size for ResChunk {}", res_type))?;
+            .add_context(|| format!("read size for ResChunk {res_type}"))?;
 
         let data = ResTypeValue::read(reader, (res_type, size, header_size))
-            .add_context(|| format!("read data for ResChunk {}", res_type))?;
+            .add_context(|| format!("read data for ResChunk {res_type}"))?;
 
         reader
             .seek(SeekFrom::Start(start_pos + size as u64))
             .stream_context(|| {
-                format!(
-                    "seek to end of ResChunk {}, start_pos: {}, size: {}",
-                    res_type, start_pos, size
-                )
+                format!("seek to end of ResChunk {res_type}, start_pos: {start_pos}, size: {size}",)
             })?;
 
         Ok(Self { data })
@@ -68,27 +65,24 @@ impl Writeable for ResChunk {
         let res_type: ResType = (&self.data).into();
         res_type
             .write_no_opts(writer)
-            .add_context(|| format!("write res_type for ResChunk {}", res_type))?;
+            .add_context(|| format!("write res_type for ResChunk {res_type}"))?;
 
         let header_size = (self.data.header_size() + ResChunk::header_size()) as u16;
         header_size
             .write_no_opts(writer)
-            .add_context(|| format!("write header_size for ResChunk {}", res_type))?;
+            .add_context(|| format!("write header_size for ResChunk {res_type}"))?;
 
         let size_pos = writer.stream_position()?;
 
         writer.seek_relative(4).stream_context(|| {
-            format!(
-                "skip 4 bytes for size_pos when writing ResChunk {}",
-                res_type
-            )
+            format!("skip 4 bytes for size_pos when writing ResChunk {res_type}",)
         })?;
 
         let start_pos = writer.stream_position()?;
 
         self.data
             .write_no_opts(writer)
-            .add_context(|| format!("write data for ResChunk {}", res_type))?;
+            .add_context(|| format!("write data for ResChunk {res_type}"))?;
 
         let aligned_pos = align(writer.stream_position()?, 4);
 
@@ -97,7 +91,7 @@ impl Writeable for ResChunk {
         if to_write > 0 {
             vec![0u8; to_write as usize]
                 .write_vec(writer)
-                .add_context(|| format!("add padding for ResChunk {}", res_type))?;
+                .add_context(|| format!("add padding for ResChunk {res_type}"))?;
         }
 
         let end_pos = writer.stream_position()?;
@@ -107,7 +101,7 @@ impl Writeable for ResChunk {
         writer.seek(SeekFrom::Start(size_pos))?;
 
         size.write_no_opts(writer)
-            .add_context(|| format!("write size for ResChunk {}", res_type))?;
+            .add_context(|| format!("write size for ResChunk {res_type}"))?;
 
         writer.seek(SeekFrom::Start(end_pos))?;
 
@@ -443,7 +437,7 @@ impl Readable for ResType {
             0x204 => Self::TableOverlayable,
             0x205 => Self::TableOverlayablePolicy,
             0x206 => Self::TableStagedAlias,
-            v => Err(std::io::Error::other(format!("invalid type: {}", v)))
+            v => Err(std::io::Error::other(format!("invalid type: {v}")))
                 .with_context(reader.stream_position()?, || "match res_type id")?,
         })
     }
@@ -503,7 +497,7 @@ impl Display for ResType {
             ResType::TableOverlayablePolicy => "table overlayable policy",
             ResType::TableStagedAlias => "table staged alias",
         };
-        write!(f, "{}", str)
+        write!(f, "{str}")
     }
 }
 
@@ -615,7 +609,7 @@ impl Readable for Vec<ResChunk> {
 
         while reader.stream_position()? - start_pos < (args) {
             let chunk =
-                ResChunk::read_no_opts(reader).add_context(|| format!("read res_chunk {}", i))?;
+                ResChunk::read_no_opts(reader).add_context(|| format!("read res_chunk {i}"))?;
 
             chunks.push(chunk);
 

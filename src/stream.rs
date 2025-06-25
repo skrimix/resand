@@ -50,10 +50,10 @@ impl Display for StreamError {
         let mut context_str = String::new();
 
         for ctx in &self.context {
-            context_str.push_str(&format!("\n{}", ctx));
+            context_str.push_str(&format!("\n{ctx}"));
         }
 
-        write!(f, "{}\n{}", string, context_str)
+        write!(f, "{string}\n{context_str}")
     }
 }
 
@@ -128,7 +128,7 @@ fn read_data<R: Read + Seek, const N: usize>(reader: &mut R) -> StreamResult<[u8
     let mut buf = [0; N];
     reader
         .read_exact(&mut buf)
-        .with_context(reader.stream_position()?, || format!("read_data<{}>", N))?;
+        .with_context(reader.stream_position()?, || format!("read_data<{N}>"))?;
     Ok(buf)
 }
 

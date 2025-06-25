@@ -43,7 +43,7 @@ impl Readable for ResTableTypeSpec {
 
         if res0 != 0 {
             return Err(StreamError::new_string_context(
-                format!("invalid res0 {}, expected 0", res0),
+                format!("invalid res0 {res0}, expected 0"),
                 reader.stream_position()?,
                 "validate res0 for ResTableTypeSpec",
             ));
@@ -397,7 +397,7 @@ impl<const N: usize> Readable for FixedUTF8String<N> {
     fn read<R: Read + Seek>(reader: &mut R, _args: Self::Args) -> StreamResult<Self> {
         Ok(Self {
             data: <Vec<u8>>::read_vec(reader, N)
-                .add_context(|| format!("read data for FixedUTF8String<{}>", N))?,
+                .add_context(|| format!("read data for FixedUTF8String<{N}>"))?,
         })
     }
 }
@@ -407,7 +407,7 @@ impl<const N: usize> Writeable for FixedUTF8String<N> {
     fn write<W: Write + Seek>(self, writer: &mut W, _args: Self::Args) -> StreamResult<()> {
         self.data
             .write_vec(writer)
-            .add_context(|| format!("write data for FixedUTF8String<{}>", N))
+            .add_context(|| format!("write data for FixedUTF8String<{N}>"))
     }
 }
 
@@ -546,7 +546,7 @@ impl Readable for ResTableType {
 
         if reserved != 0 {
             return Err(StreamError::new_string_context(
-                format!("invalid reserved value: {}, expected 0", reserved),
+                format!("invalid reserved value: {reserved}, expected 0"),
                 reader.stream_position()?,
                 "validate reserved for ResTableType",
             ));
@@ -653,8 +653,7 @@ impl Display for InvalidEntry {
                 got_id,
             } => write!(
                 f,
-                "invalid entry, expected entry id {}, got {}",
-                expected_id, got_id
+                "invalid entry, expected entry id {expected_id}, got {got_id}"
             ),
             Self::InvalidEntry => write!(f, "invalid entry, entry cannot be None"),
         }
@@ -721,9 +720,9 @@ impl Readable for Vec<(usize, Option<ResTableEntry>)> {
                         reader.seek(SeekFrom::Start(start_pos + offset as u64))?;
                         data.push((
                             i,
-                            Some(ResTableEntry::read_no_opts(reader).add_context(|| {
-                                "read entry for ResTableTypeEntryIndicies::NoSparse"
-                            })?),
+                            Some(ResTableEntry::read_no_opts(reader).add_context(
+                                || "read entry for ResTableTypeEntryIndicies::NoSparse",
+                            )?),
                         ));
                     }
                 }
@@ -738,9 +737,9 @@ impl Readable for Vec<(usize, Option<ResTableEntry>)> {
                     data.push((
                         v.idx as usize,
                         Some(
-                            ResTableEntry::read_no_opts(reader).add_context(|| {
-                                "read entry for ResTableTypeEntryIndicies::Sparse"
-                            })?,
+                            ResTableEntry::read_no_opts(reader).add_context(
+                                || "read entry for ResTableTypeEntryIndicies::Sparse",
+                            )?,
                         ),
                     ));
                 }
@@ -1351,7 +1350,7 @@ fn parse_string_pool<R: Read + Seek>(reader: &mut R) -> StreamResult<StringPoolH
     let res_type: ResType = (&chunk.data).into();
 
     Err(StreamError::new_string_context(
-        format!("invalid res type: {}, expected StringPool", res_type),
+        format!("invalid res type: {res_type}, expected StringPool"),
         start,
         "validate chunk for parse_string_pool",
     ))
@@ -1431,7 +1430,7 @@ fn write_utf16_fixed_null_string<W: Write + Seek>(
 /// Header for a resource table. Its data contains a series of additional chunks:
 ///
 /// - A ResStringPool_header containg all table values. This string pool contains all of the string
-///     values in the entire resource table (not the names of entries or type identifiers however).
+///   values in the entire resource table (not the names of entries or type identifiers however).
 /// - One or more ResTable_package chunks.
 ///
 /// Specific entries within a resource table can be uniquely identified with a single integer as
@@ -1544,7 +1543,7 @@ impl ResTable {
         let res_type: ResType = (&header.data).into();
 
         Err(StreamError::new_string_context(
-            format!("invalid res_type: {}, expected ResTable", res_type),
+            format!("invalid res_type: {res_type}, expected ResTable"),
             pos,
             "validate read chunk for ResTable",
         ))

@@ -289,7 +289,7 @@ impl Readable for ResXMLTreeAttrExt {
 
         if attribute_size != 20 {
             return Err(StreamError::new_string_context(
-                format!("invalid attribute_size: {}, expected 20", attribute_size),
+                format!("invalid attribute_size: {attribute_size}, expected 20"),
                 reader.stream_position()?,
                 "validate attribute size for ResXMLTreeAttrExt",
             ));
@@ -441,7 +441,7 @@ impl RawXMLTree {
         }
         let res_type: ResType = (&header.data).into();
         Err(StreamError::new_string_context(
-            format!("invalid res_type: {}, expected XML", res_type),
+            format!("invalid res_type: {res_type}, expected XML"),
             pos,
             "validate read chunk for RawXMLTree",
         ))
@@ -467,8 +467,8 @@ pub enum ReadAXMLError {
 impl Display for ReadAXMLError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::ReadError(e) => write!(f, "failed to read res xml tree: {}", e),
-            Self::InvalidType(t) => write!(f, "invalid type: {} expected XML Tree", t),
+            Self::ReadError(e) => write!(f, "failed to read res xml tree: {e}"),
+            Self::InvalidType(t) => write!(f, "invalid type: {t} expected XML Tree"),
         }
     }
 }
@@ -595,10 +595,10 @@ impl Display for XMLTreeParseError {
             Self::TooFewEndNamespaces => "too few end namespace chunks in xml tree".to_string(),
             Self::TooManyEndElements => "too many end element chunks in xml tree".to_string(),
             Self::TooFewEndElements => "too few end element chunks in xml tree".to_string(),
-            Self::UnrecognisedChunk(t) => format!("unrecognised chunk type: {} in xml tree", t),
+            Self::UnrecognisedChunk(t) => format!("unrecognised chunk type: {t} in xml tree"),
             Self::MultipleRootNodes => "multiple root nodes found in xml tree".to_string(),
         };
-        write!(f, "{}", str)
+        write!(f, "{str}")
     }
 }
 

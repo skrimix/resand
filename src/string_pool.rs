@@ -3,7 +3,7 @@ use std::{
     collections::HashMap,
     io::{Read, Seek, SeekFrom, Write},
     iter::zip,
-    string::{FromUtf16Error, FromUtf8Error},
+    string::{FromUtf8Error, FromUtf16Error},
 };
 
 use crate::{
@@ -217,8 +217,7 @@ impl Readable for StringPool {
             .seek(SeekFrom::Start(header_offset + strings_start as u64))
             .stream_context(|| {
                 format!(
-                    "seek to strings position: header_offset: {}, strings_start: {} for StringPool",
-                    header_offset, strings_start
+                    "seek to strings position: header_offset: {header_offset}, strings_start: {strings_start} for StringPool"
                 )
             })?;
 
@@ -229,8 +228,7 @@ impl Readable for StringPool {
             .seek(SeekFrom::Start(header_offset + styles_start as u64))
             .stream_context(|| {
                 format!(
-                    "seek to styles position: header_offset: {}, styles_start: {} for StringPool",
-                    header_offset, styles_start
+                    "seek to styles position: header_offset: {header_offset}, styles_start: {styles_start} for StringPool"
                 )
             })?;
 
@@ -256,8 +254,7 @@ impl Readable for Vec<ResStringPoolSpan> {
                 .seek(SeekFrom::Start(start_pos + index as u64))
                 .stream_context(|| {
                     format!(
-                        "seek to style position: start_pos: {}, index: {} for Vec<ResStringPoolSpan>",
-                        start_pos, index
+                        "seek to style position: start_pos: {start_pos}, index: {index} for Vec<ResStringPoolSpan>"
                     )
                 })?;
             styles.push(
@@ -624,7 +621,7 @@ impl Readable for StringPoolString16 {
 
         if null != 0 {
             return Err(StreamError::new_string_context(
-                format!("invalid null value {}, expected 0x0000", null),
+                format!("invalid null value {null}, expected 0x0000"),
                 reader.stream_position()?,
                 "validate null bytes for StringPoolString16",
             ));
@@ -736,8 +733,7 @@ impl Readable for StringPoolString8 {
         if str_length != read_length {
             return Err(StreamError::new_string_context(
                 format!(
-                    "the read string had a length of {}, but a length of {} was expected",
-                    read_length, str_length
+                    "the read string had a length of {read_length}, but a length of {str_length} was expected"
                 ),
                 reader.stream_position()?,
                 "validate read string for StringPoolString8",
@@ -749,7 +745,7 @@ impl Readable for StringPoolString8 {
 
         if null != 0 {
             return Err(StreamError::new_string_context(
-                format!("invalid null value: {}, expected 0", null),
+                format!("invalid null value: {null}, expected 0"),
                 reader.stream_position()?,
                 "validate null for StringPoolString8",
             ));

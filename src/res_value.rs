@@ -24,7 +24,7 @@ impl Readable for ResValue {
         let size = u16::read_no_opts(reader).add_context(|| "read size for ResValue")?;
         if size != 8 {
             return Err(StreamError::new_string_context(
-                format!("invalid size {}, expected 8", size),
+                format!("invalid size {size}, expected 8"),
                 reader.stream_position()?,
                 "validate size for ResValue",
             ));
@@ -32,7 +32,7 @@ impl Readable for ResValue {
         let res0 = u8::read_no_opts(reader).add_context(|| "read res0 for ResValue")?;
         if res0 != 0 {
             return Err(StreamError::new_string_context(
-                format!("invalid res0 {}, expected 0", res0),
+                format!("invalid res0 {res0}, expected 0"),
                 reader.stream_position()?,
                 "validate res0 for ResValue",
             ));
@@ -95,7 +95,7 @@ impl Readable for ResTypeNullType {
             1 => Self::Empty,
             v => {
                 return Err(StreamError::new_string_context(
-                    format!("invalid null value: {}, expected 0 or 1", v),
+                    format!("invalid null value: {v}, expected 0 or 1"),
                     reader.stream_position()?,
                     "read ResTypeNullType",
                 ));
@@ -141,7 +141,7 @@ impl Readable for ResTypeBoolType {
             0xffffffff => Self::Null,
             v => {
                 return Err(StreamError::new_string_context(
-                    format!("invalid bool type {}, expected 0, 1 or 0xffffffff", v),
+                    format!("invalid bool type {v}, expected 0, 1 or 0xffffffff"),
                     reader.stream_position()?,
                     "read ResTypeBoolType",
                 ));
@@ -175,7 +175,7 @@ impl Display for ResTypeBoolType {
             ResTypeBoolType::True => "true",
             ResTypeBoolType::False => "false",
         };
-        write!(f, "{}", str)
+        write!(f, "{str}")
     }
 }
 
@@ -492,7 +492,7 @@ impl Readable for ResValueType {
             0x1f => ResValueType::IntColorRGB4(RGB4::read_no_opts(reader)?),
             v => {
                 return Err(StreamError::new_string_context(
-                    format!("invalid res_type {}", v),
+                    format!("invalid res_type {v}"),
                     reader.stream_position()?,
                     "match res_type for ResValueType",
                 ));
