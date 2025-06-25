@@ -8,7 +8,7 @@ use crate::{
         NewResultCtx, Readable, ReadableNoOptions, ResultCtx, StreamResult, VecReadable,
         VecWritable, Writeable, WriteableNoOptions,
     },
-    string_pool::StringPool,
+    string_pool::{ResStringPoolRef, StringPool},
     table::{
         ResTable, ResTableLib, ResTableOverlayable, ResTableOverlayablePolicy, ResTablePackage,
         ResTableStagedAlias, ResTableType, ResTableTypeSpec,
@@ -160,6 +160,40 @@ impl From<ResTypeValue> for ResChunk {
 #[derive(Debug, PartialEq, Clone, Default)]
 pub struct ResourceMap {
     pub mapping: Vec<ResTableRef>,
+}
+
+impl ResourceMap {
+    /// Set the table reference for a given string
+    ///
+    /// # Arguments
+    ///
+    /// * `index` - the string pool reference
+    /// * `reference` - the table reference
+    pub fn insert(&mut self, index: ResStringPoolRef, reference: ResTableRef) {
+        let index_usize = index.index as usize;
+
+        let item = self.mapping.get_mut(index_usize);
+
+        if let Some(item) = item {
+            *item = reference;
+        } else {
+            self.mapping.resize(index_usize, ResTableRef::null());
+            self.mapping.push(reference);
+        }
+    }
+
+    /// Get a table reference for a given string
+    ///
+    /// # Arguments
+    ///
+    /// * `index` - the string pool reference
+    ///
+    /// # Returns
+    ///
+    /// An Option<&ResTableRef>. Some(..) if it was found, None otherwise
+    pub fn get(&self, index: ResStringPoolRef) -> Option<&ResTableRef> {
+        self.mapping.get(index.index as usize)
+    }
 }
 
 impl Readable for ResourceMap {
