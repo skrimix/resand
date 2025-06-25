@@ -168,7 +168,7 @@ impl Readable for ResourceMap {
         reader: &mut R,
         args: Self::Args,
     ) -> StreamResult<Self> {
-        let count = args - (Self::header_size() + ResChunk::header_size()) / 4;
+        let count = (args - (Self::header_size() + ResChunk::header_size())) / 4;
         Ok(Self {
             mapping: <Vec<ResTableRef>>::read_vec(reader, count)
                 .add_context(|| "read mapping for ResourceMap")?,
