@@ -8,8 +8,8 @@ use crate::{
     defs::{HeaderSizeStatic, ResChunk, ResTableRef, ResType, ResTypeValue, ResourceMap},
     res_value::{ResValue, ResValueType},
     stream::{
-        NewResultCtx, Readable, ReadableNoOptions, StreamError, StreamResult, VecReadable,
-        VecWritable, Writeable, WriteableNoOptions,
+        NewResultCtx, Readable, ReadableNoOptions, StreamError, StreamResult, VecWritable,
+        Writeable, WriteableNoOptions,
     },
     string_pool::{ResStringPoolRef, StringPool, StringPoolHandler},
 };
@@ -287,9 +287,10 @@ impl Readable for ResXMLTreeAttrExt {
         let attribute_size = u16::read_no_opts(reader)
             .add_context(|| "read attribute_size for ResXMLTreeAttrExt")?;
 
-        if attribute_size != 20 {
+        // Accept both legacy (20) and extended (24) attribute sizes.
+        if attribute_size != 20 && attribute_size != 24 {
             return Err(StreamError::new_string_context(
-                format!("invalid attribute_size: {attribute_size}, expected 20"),
+                format!("invalid attribute_size: {attribute_size}, expected 20 or 24"),
                 reader.stream_position()?,
                 "validate attribute size for ResXMLTreeAttrExt",
             ));
@@ -307,8 +308,27 @@ impl Readable for ResXMLTreeAttrExt {
 
         reader.seek(std::io::SeekFrom::Start(start_pos + attribute_start as u64))?;
 
-        let attributes = <Vec<ResXMLTreeAttribute>>::read_vec(reader, attribute_count as usize)
-            .add_context(|| "read attributes for ResXMLTreeAttrExt")?;
+        // Read attributes one by one to account for possible extra bytes per entry
+        // when attribute_size == 24 (vs legacy 20).
+        let mut attributes: Vec<ResXMLTreeAttribute> = Vec::with_capacity(attribute_count as usize);
+        for _ in 0..attribute_count {
+            let ns = ResStringPoolRef::read_no_opts(reader)
+                .add_context(|| "read ns for ResXMLTreeAttribute")?;
+            let name = ResStringPoolRef::read_no_opts(reader)
+                .add_context(|| "read name for ResXMLTreeAttribute")?;
+            let raw_value = ResStringPoolRef::read_no_opts(reader)
+                .add_context(|| "read raw_value for ResXMLTreeAttribute")?;
+
+            let typed_value = ResValue::read_no_opts(reader)
+                .add_context(|| "read typed_value for ResXMLTreeAttribute")?;
+
+            attributes.push(ResXMLTreeAttribute {
+                ns,
+                name,
+                raw_value,
+                typed_value,
+            });
+        }
 
         Ok(Self {
             node,
@@ -1075,15 +1095,13 @@ impl XMLTreeNode {
 
             if let Some(position) = position {
                 self.element.attributes.insert(position, attr);
-                self
-                    .element
+                self.element
                     .attributes
                     .get_mut(position)
                     .expect("attribute inserted correctly")
             } else {
                 self.element.attributes.push(attr);
-                self
-                    .element
+                self.element
                     .attributes
                     .last_mut()
                     .expect("attributes was not empty")

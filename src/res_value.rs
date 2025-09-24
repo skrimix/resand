@@ -23,9 +23,9 @@ impl Readable for ResValue {
         _args: Self::Args,
     ) -> StreamResult<Self> {
         let size = u16::read_no_opts(reader).add_context(|| "read size for ResValue")?;
-        if size != 8 {
+        if size != 8 && size != 12 {
             return Err(StreamError::new_string_context(
-                format!("invalid size {size}, expected 8"),
+                format!("invalid size {size}, expected 8 or 12"),
                 reader.stream_position()?,
                 "validate size for ResValue",
             ));
@@ -38,9 +38,14 @@ impl Readable for ResValue {
                 "validate res0 for ResValue",
             ));
         }
-        Ok(Self {
-            data: ResValueType::read_no_opts(reader).add_context(|| "read data for ResValue")?,
-        })
+        let data = ResValueType::read_no_opts(reader).add_context(|| "read data for ResValue")?;
+
+        if size == 12 {
+            // Skip the 4 extra bytes present in extended ResValue entries
+            reader.seek(std::io::SeekFrom::Current(4))?;
+        }
+
+        Ok(Self { data })
     }
 }
 
