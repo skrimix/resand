@@ -1174,6 +1174,8 @@ impl TryFrom<RawXMLTree> for XMLTree {
                         root = Some(el);
                     }
                 }
+                // Ignore CDATA nodes
+                ResTypeValue::XMLCData(_) => {}
                 ResTypeValue::XMLStartNameSpace(start_namespace) => {
                     namespace_stack.push(XMLNameSpace {
                         prefix: start_namespace.prefix,
